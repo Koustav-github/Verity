@@ -1,0 +1,19 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="verity-eval",
+    version="0.1.0",
+    description="Ground truth for LLM outputs - Production monitoring",
+    author="Koustav Manna",
+    python_requires=">=3.8",
+    packages=find_packages(),
+    install_requires=[
+        "numpy>=1.20.0",
+        "scikit-learn>=1.0.0",
+        "torch>=1.9.0",
+        "transformers>=4.20.0",
+        "sentence-transformers>=2.2.0",
+        "ragas>=0.0.30",
+        "pydantic>=1.9.0",
+    ],
+)
