@@ -12,9 +12,14 @@ Verity is an evaluation layer that "sticks to" other people's AI applications an
 them how well their LLM/RAG system is behaving — eventually as continuous, scheduled
 (daily/weekly) eval reports.
 
-> **Verity is an SDK** — an importable Python library (plus a batch-runner entrypoint).
-> It is **not** a website, app, hosted service, or dashboard. Verity produces **data**
-> (metric scores + serializable reports). Storage, scheduling, visualization, and
+> **Verity ships in two parts (see §10a):** a **local engine** installed *once per
+> machine* (holds the models + runs inference at `localhost`), and a **thin SDK client**
+> installed *per project/venv* (~few MB, just an HTTP client). The client makes API calls
+> to the local engine — so the heavy models are never duplicated per virtual environment,
+> and **data never leaves the user's machine.**
+>
+> It is **not** a website, app, dashboard, or *remote* hosted service. Verity produces
+> **data** (metric scores + serializable reports). Storage, scheduling, visualization, and
 > alerting are the **user's own infrastructure** or a third-party tool — **Verity never
 > ships a UI.** Everything below respects this boundary.
 
@@ -270,8 +275,11 @@ A + C are the contract everyone uses; B stays hidden behind defaults.
 
 ## 10. Models & Size Budget
 
-Constraint: **no single model file ≥ 2 GB**; everything **lazy-loaded** (downloads only
-when the relevant path is used).
+The models live in the **local engine** (§10a), not in each project's venv. They are
+downloaded **once per machine** (cached in `~/.cache/huggingface`, shared across all
+projects) and **lazy-loaded** (only the models for the steps actually used).
+
+Constraint: **no single model file ≥ 2 GB**.
 
 - **Decomposer:** `propositionizer-wiki-flan-t5-large`, loaded **fp16 ≈ 1.5 GB**
   (single file < 2 GB). Fallback: base-size variant (~1 GB) at some quality cost.
@@ -279,7 +287,50 @@ when the relevant path is used).
   entail/neutral/contradict — needed for the contradiction signal). Vectara HHEM is a
   smaller alternative but emits only one consistency score (loses contradiction), so not
   the default.
-- Combined footprint ~2 GB, loaded on demand.
+- Combined footprint ~2 GB on the machine, loaded on demand — **never per venv.**
+
+---
+
+## 10a. Distribution Architecture (local engine + thin client)
+
+Verity is distributed as **two components** so the heavy models are installed once per
+machine while each project keeps a tiny dependency. This is the Ollama / LM Studio model.
+
+```
+ONCE PER MACHINE                          PER PROJECT (per venv)
+┌─ Verity Engine ──────────┐              ┌─ pip install verity ─┐
+│  models + inference       │◀── HTTP ────│  thin client (~few MB)│
+│  runs at localhost:PORT   │  localhost  │  HTTP client only      │
+└──────────────────────────┘              └───────────────────────┘
+     (install via pipx; auto-spawned)          (in every venv, tiny)
+```
+
+- **Verity Engine** — installed once per machine, holds the models (§10) and runs
+  inference, exposing local endpoints (`POST /v1/evaluate`, `POST /v1/generate`) at
+  `localhost:PORT`. Default install via **pipx**; **auto-spawned** by the client on first
+  call (fallback: manual `verity serve`).
+- **Verity SDK (thin client)** — `pip install verity` per venv, ~few MB, **no torch, no
+  models** — just an HTTP client. For generation it pulls chunks from the vector DB
+  *locally* and sends only the **chunk text** to the engine (DB keys never leave the
+  machine).
+
+Why this shape (it satisfies every constraint at once):
+
+| Constraint | Resolution |
+|---|---|
+| Disk space / no per-venv torch | heavy install **once per machine** |
+| Virtual-env ergonomics | thin client per venv (~few MB) |
+| Privacy (data never leaves machine) | engine is **localhost** |
+| Our infra cost | **zero** — no GPUs to run |
+
+**Same client, optional remote endpoint.** The client always talks to an engine via an
+address; `Evaluator()` defaults to `localhost`, while
+`Evaluator(endpoint="https://…")` can point at a *remote* engine later (the open-core
+upsell). Local-now and hosted-later are the same SDK, different endpoint — the backend is
+pluggable for free.
+
+**Version compatibility:** client and engine negotiate an API version on connect, so an
+older pinned client doesn't break against a newer machine-wide engine.
 
 ---
 
@@ -340,6 +391,12 @@ Ordered roughly by expected sequence:
    (~0.44 GB), lazy-loaded, under the 2 GB/file cap.
 6. **Serialization:** required (`to_dict()`, timestamped) — the bridge to monitoring.
 7. **Dependencies:** drop `ragas`; reimplement the triad locally.
-8. **Delivery:** Verity *is* an SDK — importable library call + thin batch-runner
-   entrypoint, consuming existing traces. No hosted service, storage, UI, or dashboards
-   built by Verity (the user owns those).
+8. **Delivery:** Verity *is* an SDK — importable client + thin batch-runner entrypoint,
+   consuming existing traces. No *remote* hosted service, storage, UI, or dashboards built
+   by Verity (the user owns those).
+9. **Distribution (§10a):** two components — a **local engine** installed once per machine
+   (pipx, auto-spawned, holds the models, runs at `localhost`) + a **thin SDK client** per
+   venv (~few MB, HTTP only). Heavy models never duplicate per venv; data never leaves the
+   machine. Same client can target a remote engine later (`endpoint=`) as the open-core
+   path.
+

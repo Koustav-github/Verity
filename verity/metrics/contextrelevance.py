@@ -1,0 +1,1 @@
+#contextRelevance tells us that the context/chunks retrieved from the database by the model is valid for the given question or not
