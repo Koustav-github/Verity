@@ -21,11 +21,15 @@ local = [          # heavy ML models — only if you run local detectors
     "sentence-transformers>=2.2.0",
     "scikit-learn>=1.0.0",
 ]
-llm = [            # only if you enable LLM escalation
+llm = [            # LLM escalation + question generation
     "openai>=1.0.0",
     "anthropic>=0.40.0",
 ]
-dev = ["pytest>=7.0"]
+pinecone = [       # vector-DB connector for test-set generation
+    "pinecone>=5.0.0",
+]
+all = ["verity-eval[local,llm,pinecone]"]
+dev = ["pytest>=7.0", "python-dotenv>=1.0.0"]
 
 [tool.setuptools.packages.find]
 include = ["verity*"]

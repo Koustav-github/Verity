@@ -47,3 +47,25 @@ def test_skips_items_missing_fields():
 def test_non_list_json_returns_empty():
     gen = LLMQuestionGenerator(client=_FakeLLM('{"question": "x", "answer": "y"}'))
     assert gen.generate("chunk") == []
+
+
+def test_parses_json_wrapped_in_code_fences():
+    resp = '```json\n[{"question": "q?", "answer": "a"}]\n```'
+    gen = LLMQuestionGenerator(client=_FakeLLM(resp))
+    cases = gen.generate("chunk")
+    assert len(cases) == 1
+    assert cases[0].question == "q?"
+
+
+def test_prompt_enforces_passage_only_grounding():
+    prompt = LLMQuestionGenerator(client=_FakeLLM("[]")).build_prompt("X").lower()
+    # must forbid outside/external knowledge
+    assert any(
+        p in prompt
+        for p in ["outside knowledge", "external knowledge", "prior knowledge"]
+    )
+    # answers must be answerable from the passage itself
+    assert any(
+        p in prompt
+        for p in ["answerable from the passage", "stated in the passage", "from the passage alone"]
+    )

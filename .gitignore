@@ -4,3 +4,10 @@ __pycache__/
 .venv/
 build/
 dist/
+# Secrets — never commit
+.env
+.env.*
+*.env
+
+# Generated eval artifacts
+eval_set.jsonl

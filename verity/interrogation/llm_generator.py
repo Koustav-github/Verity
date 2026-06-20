@@ -9,11 +9,27 @@ You are creating an evaluation test set from a single source passage.
 Generate realistic questions a user might ask, INCLUDING questions that require
 reasoning or applying the information to a specific case (not just fact lookup).
 
+STRICT GROUNDING RULES (critical):
+- Use ONLY information explicitly stated in the passage. Do NOT use outside knowledge.
+- Every "answer" must be fully answerable from the passage alone.
+- If a detail (e.g. names, dates, figures) is not in the passage, do NOT ask about it.
+
 Return ONLY a JSON array of objects with keys "question" and "answer".
 
 Passage:
 {chunk}
 """
+
+
+def _strip_code_fences(raw: str) -> str:
+    """Remove a leading ```/```json fence and trailing ``` if present."""
+    text = raw.strip()
+    if text.startswith("```"):
+        newline = text.find("\n")
+        text = text[newline + 1 :] if newline != -1 else ""
+        if "```" in text:
+            text = text[: text.rfind("```")]
+    return text.strip()
 
 
 class LLMQuestionGenerator(QuestionGenerator):
@@ -32,8 +48,8 @@ class LLMQuestionGenerator(QuestionGenerator):
     def generate(self, chunk: str) -> List[TestCase]:
         raw = self.client.complete(self.build_prompt(chunk))
         try:
-            items = json.loads(raw)
-        except (json.JSONDecodeError, TypeError):
+            items = json.loads(_strip_code_fences(raw))
+        except (json.JSONDecodeError, TypeError, AttributeError):
             return []
 
         if not isinstance(items, list):
