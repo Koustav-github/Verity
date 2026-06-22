@@ -10,6 +10,7 @@ class ItemScore:
     answer: str
     answer_relevance: float
     context_relevance: float
+    faithfulness: float
 
 
 @dataclass
@@ -31,6 +32,10 @@ class EvalReport:
     def mean_context_relevance(self) -> float:
         return self._mean("context_relevance")
 
+    @property
+    def mean_faithfulness(self) -> float:
+        return self._mean("faithfulness")
+
 
 class EvalRunner:
     """Scores RAG outputs on the offline triad (answer + context relevance).
@@ -39,9 +44,10 @@ class EvalRunner:
     decoupled from how those metrics are implemented.
     """
 
-    def __init__(self, answer_relevance, context_relevance):
+    def __init__(self, answer_relevance, context_relevance, faithfulness):
         self.answer_relevance = answer_relevance
         self.context_relevance = context_relevance
+        self.faithfulness = faithfulness
 
     def evaluate(
         self, question: str, context: Union[str, List[str]], answer: str
@@ -51,6 +57,7 @@ class EvalRunner:
             answer=answer,
             answer_relevance=self.answer_relevance.score(question, answer),
             context_relevance=self.context_relevance.score(question, context),
+            faithfulness=self.faithfulness.score(answer, context),
         )
 
     def evaluate_batch(self, items: List[dict]) -> EvalReport:
