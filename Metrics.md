@@ -56,91 +56,91 @@
 | GenAI  | Image Generation | FID, CLIP Score, Aesthetic Score                                                            |
 
 ## Serving
-Latency
-P50 Latency
-P95 Latency
-P99 Latency
-Throughput (RPS)
-Concurrent Requests
-Queue Length
-Request Count
-Success Rate
-Error Rate
-Timeout Rate
-Availability
-Uptime
+-Latency
+-P50 Latency
+-P95 Latency
+-P99 Latency
+-Throughput (RPS)
+-Concurrent Requests
+-Queue Length
+-Request Count
+-Success Rate
+-Error Rate
+-Timeout Rate
+-Availability
+-Uptime
 
 ## Infra
 
-CPU Utilization
-Memory Usage
-GPU Utilization
-GPU Memory Usage
-Disk Usage
-Disk I/O
-Network I/O
-Container/Pod Health
-Instance Count
-Autoscaling Events
-Restart Count
-Temperature (CPU/GPU)
+-CPU Utilization
+-Memory Usage
+-GPU Utilization
+-GPU Memory Usage
+-Disk Usage
+-Disk I/O
+-Network I/O
+-Container/Pod Health
+-Instance Count
+-Autoscaling Events
+-Restart Count
+-Temperature (CPU/GPU)
 
 ## Data Quality
 
-Missing Value Percentage
-Null Count
-Schema Violations
-Feature Drift
-Data Drift
-Concept Drift
-Outlier Percentage
-Data Freshness
-Distribution Shift
+-Missing Value Percentage
+-Null Count
+-Schema Violations
+-Feature Drift
+-Data Drift
+-Concept Drift
+-Outlier Percentage
+-Data Freshness
+-Distribution Shift
 
 ## Cost
 
-Cost per Day
-Compute Cost
-Storage Cost
-GPU Hours Consumed
-Token Cost (for LLMs)
+-Cost per Day
+-Compute Cost
+-Storage Cost
+-GPU Hours Consumed
+-Token Cost (for LLMs)
 
 ## Reliability
 
-MTTR (Mean Time To Recovery)
-MTBF (Mean Time Between Failures)
-SLA Compliance
-SLO Compliance
-Incident Count
-Alert Count
+-MTTR (Mean Time To Recovery)
+-MTBF (Mean Time Between Failures)
+-SLA Compliance
+-SLO Compliance
+-Incident Count
+-Alert Count
 
 ## Deployment
 
-Model Version
-Deployment Frequency
-Rollback Count
-Environment (Dev/Staging/Prod)
-Deployment Age
+-Model Version
+-Deployment Frequency
+-Rollback Count
+-Environment (Dev/Staging/Prod)
+-Deployment Age
 
 ## Usage
 
-Active Users
-Requests per User
-Peak Traffic
-Geographic Distribution
-Traffic Distribution
+-Active Users
+-Requests per User
+-Peak Traffic
+-Geographic Distribution
+-Traffic Distribution
 
 ## Observability
 
-Log Count
-Trace Count
-Span Duration
-Event Count
+-Log Count
+-Trace Count
+-Span Duration
+-Event Count
 
 ## Security
 
 
-Authentication Failures
-Rate Limit Violations
-Unauthorized Access Attempts
-API Key Usage
+-Authentication Failures
+-Rate Limit Violations
+-Unauthorized Access Attempts
+-API Key Usage

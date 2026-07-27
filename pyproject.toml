@@ -33,3 +33,8 @@ dev = ["pytest>=7.0", "python-dotenv>=1.0.0"]
 
 [tool.setuptools.packages.find]
 include = ["verity*"]
+
+[tool.uv.workspace]
+members = [
+    "server",
+]
