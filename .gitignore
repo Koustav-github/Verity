@@ -16,3 +16,4 @@ eval_set.jsonl
 # Test model
 demo/
 .vscode/
+verity/tests
