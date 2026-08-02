@@ -10,7 +10,7 @@ def upload(
         client: httpx.Client | None = None,
 
 ) -> dict:
-    client = client or httpx.Client()
+    client = client or httpx.Client(timeout=60.0)
     response = client.post(
         f"{endpoint}/ingest",
         files = {"artifact": ("artifact", payload, "application/octet-stream")},
