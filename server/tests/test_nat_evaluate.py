@@ -2,7 +2,7 @@ from agents.brain2.nat.evaluate import evaluate
 
 FIXTURE = {
     "kind": "labeled_holdout",
-    "uri": "seaweedfs://verity/abc123",
+    "uri": "s3://verity/abc123",
     "sha256": "abc123",
     "spec": {"n_samples": 4},
 }
@@ -50,7 +50,7 @@ def test_a_model_clearing_its_thresholds_produces_a_passing_eval_run():
     assert eval_run["verdict"] == "pass"
     assert eval_run["failed_on"] == []
     assert eval_run["error"] is None
-    assert eval_run["test_set_ref"] == "seaweedfs://verity/abc123"
+    assert eval_run["test_set_ref"] == "s3://verity/abc123"
     assert eval_run["fixture"] == FIXTURE
     assert eval_run["metric_set"] == {"resolved": ["accuracy"], "skipped": []}
     assert eval_run["thresholds"] == passing_plan()["thresholds"]
@@ -100,7 +100,7 @@ def test_a_model_missing_a_threshold_fails_the_gate():
 def test_a_fixture_kind_with_no_mechanism_errors_instead_of_evaluating_the_wrong_way():
     eval_run = evaluate(
         manifest=MANIFEST,
-        fixture={"kind": "corpus_index", "uri": "seaweedfs://verity/xyz"},
+        fixture={"kind": "corpus_index", "uri": "s3://verity/xyz"},
         data=DATA,
         model_payload=b"pickled",
         execute_fn=perfect_execute,

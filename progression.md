@@ -18,3 +18,4 @@ the record is being maintained after the reboot
    - Caveat, deliberately: those numbers are single-process, single-client, cold
      sandbox. Feasibility, not production p99. Real load is Falcon's.
    Still not automated past here: Fury, promotion to production, `promoted_from`.
+4. shifted the workflow to aws service. There were several cahllenges with seaweedfs, first i had to get a virtual machine, for hosting seaweedfs distributed storage or else there was no possible way. got the free aws account with $100 free credits, so spun up a s3 bucket, we could have also done a ec2 instance, but utilizing better infra as available.

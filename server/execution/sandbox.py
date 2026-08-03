@@ -7,7 +7,7 @@ import cloudpickle
 
 _SERVER_DIR = Path(__file__).parent.parent
 
-# The only variables the child inherits. Everything else — SUPABASE_*, SEAWEEDFS_*,
+# The only variables the child inherits. Everything else — SUPABASE_*, AWS_*,
 # VERITY_LLM_* — is withheld, so an artifact that runs arbitrary code inside predict()
 # finds no credentials there. SYSTEMROOT is not optional on Windows: without it the
 # interpreter fails to start.

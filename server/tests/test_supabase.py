@@ -44,7 +44,7 @@ def test_save_model_version_inserts_a_row_and_returns_its_id():
 
     model_version_id = store.save_model_version(
         sha256="abc123",
-        artifact_uri="seaweedfs://verity-artifacts/abc123",
+        artifact_uri="s3://verity-artifacts/abc123",
         user_id="u_1",
         args={"framework_hint": "sklearn"},
         status="pending",
@@ -57,7 +57,7 @@ def test_save_model_version_inserts_a_row_and_returns_its_id():
             {
                 "id": model_version_id,
                 "artifact_sha256": "abc123",
-                "artifact_uri": "seaweedfs://verity-artifacts/abc123",
+                "artifact_uri": "s3://verity-artifacts/abc123",
                 "user_id": "u_1",
                 "args": {"framework_hint": "sklearn"},
                 "status": "pending",
@@ -104,8 +104,8 @@ EVAL_RUN = {
     "thresholds": [{"metric": "accuracy", "op": ">=", "value": 0.7}],
     "verdict": "pass",
     "failed_on": [],
-    "test_set_ref": "seaweedfs://verity/abc123",
-    "fixture": {"kind": "labeled_holdout", "uri": "seaweedfs://verity/abc123"},
+    "test_set_ref": "s3://verity/abc123",
+    "fixture": {"kind": "labeled_holdout", "uri": "s3://verity/abc123"},
     "error": None,
     "started_at": "2026-08-03T10:00:00+00:00",
     "finished_at": "2026-08-03T10:00:02+00:00",

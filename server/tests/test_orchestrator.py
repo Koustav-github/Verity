@@ -9,7 +9,7 @@ class FakeBlobStore:
 
     def put(self, sha256: str, payload: bytes) -> str:
         self.blobs[sha256] = payload
-        return f"seaweedfs://artifacts/{sha256}"
+        return f"s3://artifacts/{sha256}"
 
 
 class FakeMetadataStore:
@@ -57,7 +57,7 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
     class FakeBlobStore:
         def put(self, sha256: str, payload: bytes) -> str:
             stored_blobs[sha256] = payload
-            return f"seaweedfs://artifacts/{sha256}"
+            return f"s3://artifacts/{sha256}"
 
     class FakeMetadataStore:
         def save_model_version(self, *, sha256, artifact_uri, user_id, args, status):
@@ -90,13 +90,13 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
     )
 
     assert stored_blobs["abc123"] == payload
-    assert stored_metadata["abc123"]["artifact_uri"] == "seaweedfs://artifacts/abc123"
+    assert stored_metadata["abc123"]["artifact_uri"] == "s3://artifacts/abc123"
     assert stored_metadata["abc123"]["status"] == "pending"
     assert identified_models == [{"kind": "fake-model"}]
     assert stored_manifests["mv_123"] == {"framework": "sklearn", "model_class": "FakeModel"}
     assert result == {
         "model_version_id": "mv_123",
-        "artifact_uri": "seaweedfs://artifacts/abc123",
+        "artifact_uri": "s3://artifacts/abc123",
         "status": "pending",
         "manifest": {"framework": "sklearn", "model_class": "FakeModel"},
         "eval_run": None,
@@ -148,7 +148,7 @@ def test_the_fixture_descriptor_records_where_the_test_set_actually_landed():
         evaluate_fn=recording_eval,
     )
 
-    assert seen["fixture"]["uri"] == "seaweedfs://artifacts/def456"
+    assert seen["fixture"]["uri"] == "s3://artifacts/def456"
     assert seen["data"] == {"X": [[0.0]], "y": [0]}
 
 

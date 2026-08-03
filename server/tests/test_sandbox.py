@@ -53,7 +53,7 @@ def test_execute_measures_the_full_systemic_sample_the_scoring_engine_expects():
 
 def test_the_sandbox_cannot_read_the_servers_credentials(monkeypatch):
     monkeypatch.setenv("SUPABASE_KEY", "service-role-secret")
-    monkeypatch.setenv("SEAWEEDFS_SECRET_KEY", "blob-store-secret")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "blob-store-secret")
     monkeypatch.setenv("VERITY_LLM_API_KEY", "llm-secret")
 
     class EnvSnooper:
@@ -62,7 +62,7 @@ def test_the_sandbox_cannot_read_the_servers_credentials(monkeypatch):
 
             return [
                 os.environ.get("SUPABASE_KEY"),
-                os.environ.get("SEAWEEDFS_SECRET_KEY"),
+                os.environ.get("AWS_SECRET_ACCESS_KEY"),
                 os.environ.get("VERITY_LLM_API_KEY"),
             ]
 

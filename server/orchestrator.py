@@ -27,7 +27,7 @@ def build_artifact(
     # which is only safe because this is our own dev/test payload today.
     # Before this handles untrusted customer uploads, this must move into
     # the sandboxed executor (Schemas.md's `python-exec` MCP scope) instead
-    # of running in the same process as SeaweedFS/Supabase credentials.
+    # of running in the same process as the S3/Supabase credentials.
     # Note this is now the ONLY unsandboxed load left: the eval itself runs
     # through execution/sandbox.py, which withholds every credential.
     model = cloudpickle.loads(payload)

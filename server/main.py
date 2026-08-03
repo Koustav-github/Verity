@@ -13,7 +13,7 @@ from typing import Callable
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from orchestrator import build_artifact
-from storage.models.seaweedfs import SeaweedFSStore
+from storage.models.s3 import S3BlobStore
 from storage.models.supabase import SupabaseMetadataStore
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -22,9 +22,9 @@ app = FastAPI()
 
 @lru_cache
 def get_build_artifact():
-    blob_store = SeaweedFSStore(
-        bucket=os.environ["SEAWEEDFS_BUCKET"],
-        endpoint_url=os.environ["SEAWEEDFS_ENDPOINT_URL"],
+    blob_store = S3BlobStore(
+        bucket=os.environ["S3_BUCKET"],
+        region=os.environ["S3_REGION"],
     )
     metadata_store = SupabaseMetadataStore()
     return partial(build_artifact, blob_store=blob_store, metadata_store=metadata_store)
