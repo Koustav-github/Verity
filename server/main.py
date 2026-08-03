@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from fastapi import Depends, FastAPI, Form, UploadFile
+from fastapi import Depends, FastAPI, File, Form, UploadFile
 from functools import lru_cache, partial
 from dotenv import load_dotenv
 from pathlib import Path
@@ -35,12 +35,19 @@ async def ingest(
     user_id: str = Form(...),
     sha256: str = Form(...),
     args: str = Form("{}"),
+    fixture: UploadFile | None = File(None),
+    fixture_descriptor: str | None = Form(None),
     build_artifact_fn: Callable = Depends(get_build_artifact),
 ):
     payload = await artifact.read()
+    # No fixture means no eval: the version is stored and identified, and stays
+    # `pending` until something gives Nat data to judge it against.
+    fixture_payload = await fixture.read() if fixture is not None else None
     return build_artifact_fn(
         payload = payload,
         sha256 = sha256,
         user_id=user_id,
         args=json.loads(args),
+        fixture_payload=fixture_payload,
+        fixture_descriptor=json.loads(fixture_descriptor) if fixture_descriptor else None,
     )

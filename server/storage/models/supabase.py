@@ -35,6 +35,19 @@ class SupabaseMetadataStore:
                 "detected_via": manifest.get("detected_via"),
                 "model_class": manifest.get("model_class"),
                 "hyperparameters": manifest.get("hyperparameters"),
+                "task_type": manifest.get("task_type"),
             }
         ).execute()
         return manifest_id
+
+    def save_eval_run(self, *, model_version_id, eval_run):
+        eval_run_id = f"evr_{uuid.uuid4().hex}"
+        self.client.table("eval_run").insert(
+            {"id": eval_run_id, "model_version_id": model_version_id, **eval_run}
+        ).execute()
+        return eval_run_id
+
+    def update_model_version_status(self, *, model_version_id, status):
+        self.client.table("model_version").update({"status": status}).eq(
+            "id", model_version_id
+        ).execute()

@@ -24,7 +24,7 @@ five minutes.
 
 The RAG-eval engine (interrogation pipeline + faithfulness / answer-relevance /
 context-relevance metrics, local-first with optional LLM escalation) is the part already
-built and tested (`verity/`). It is **Thor's scoring engine for V4**, not the starting
+built and tested (`verity/`). It is **Nat's scoring engine for V4**, not the starting
 point — the roadmap is sequenced by the agentic loop, and the loop has to work end-to-end
 for one simple model class before it earns the right to handle RAG.
 
@@ -62,12 +62,12 @@ All four agents, shallow, single path. No multi-tenancy, no dashboard, no alerti
 | Agent | Scope at V1 |
 |---|---|
 | Hawkeye | sklearn / ONNX artifact → `model_manifest.json`; flags unrecoverable semantics |
-| Thor | Atlas lookup → metric set; labeled-holdout eval; pass/fail gate |
+| Nat | Atlas lookup → metric set; labeled-holdout eval; pass/fail gate |
 | Fury | content-hash version identity; staging → production on gate pass |
 | Falcon | in-process SDK; request count, latency percentiles, error rate |
 
 ```
-artifact → Hawkeye → manifest → Thor → eval_report → Fury → registered version
+artifact → Hawkeye → manifest → Nat → eval_report → Fury → registered version
                                                               ↓
                                               Falcon → monitoring config → telemetry
 ```
@@ -112,7 +112,7 @@ platforms — sits behind an MCP server rather than a bespoke client.
 **Goal:** "Deep learning models, including ones too large to host."
 
 - Hawkeye: computation-graph introspection, multi-input models
-- Thor: GPU-aware eval dispatch
+- Nat: GPU-aware eval dispatch
 - Fury: pointer-custody — registry records artifact *location*, doesn't host GB-scale weights
 - Falcon: GPU utilization, GPU memory, resource telemetry
 
@@ -127,7 +127,7 @@ platforms — sits behind an MCP server rather than a bespoke client.
 Where the already-built `verity/` engine lands — see [Current status](#current-status).
 
 - Hawkeye: prompt schema, retriever config, tool bindings (no fixed tensor contract)
-- Thor: interrogation pipeline; faithfulness / answer-relevance / context-relevance;
+- Nat: interrogation pipeline; faithfulness / answer-relevance / context-relevance;
   local-first cascade with LLM escalation only on borderline cases
 - Fury: version identity = prompt hash + index snapshot + base model id, not weights
 - Falcon: token cost, prompt drift, retrieval quality, conversation traces
@@ -140,7 +140,7 @@ Where the already-built `verity/` engine lands — see [Current status](#current
 **Goal:** "Systems with no held-out test set."
 
 The eval mechanism genuinely forks here — policies and multi-step agents have no labeled
-holdout. Thor gains a **second engine**: rollout-based rather than dataset-based, measuring
+holdout. Nat gains a **second engine**: rollout-based rather than dataset-based, measuring
 reward, success rate, and trajectory correctness over N episodes.
 
 - Environment / task spec becomes a first-class registered object (a policy version is
@@ -196,7 +196,7 @@ Each gets decided when the version that needs it is built.
 
 | Slot | Responsibility | First needed |
 |---|---|---|
-| Agent orchestrator | Sequences Hawkeye → Thor → Fury → Falcon; owns retries and state | V1 |
+| Agent orchestrator | Sequences Hawkeye → Nat → Fury → Falcon; owns retries and state | V1 |
 | MCP client pool | Holds connections, enforces scopes, audits every tool call | V1 (fixed set) → V2 (dynamic) |
 | Manifest generator | Artifact introspection → `model_manifest.json` | V1 |
 | Metric resolver | Task type → metric set, via the Atlas taxonomy | V1 |

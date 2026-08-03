@@ -77,7 +77,7 @@ rather than guessed, and the override that fills it is recorded separately so de
 declared never blur together.
 
 ### `eval_run`
-Thor's output. Append-only.
+Nat's output. Append-only.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -101,7 +101,7 @@ Audit trail across all four agents. The thing that makes agentic behavior debugg
 | Column | Type | Notes |
 |---|---|---|
 | `id` | text PK | `agr_…` |
-| `agent` | text | `hawkeye` · `thor` · `fury` · `falcon` |
+| `agent` | text | `hawkeye` · `nat` · `fury` · `falcon` |
 | `model_version_id` | text FK | |
 | `trigger` | text | `manual` · `sdk_checkin` · `ci` |
 | `inputs` / `outputs` | jsonb | |
@@ -255,7 +255,7 @@ Discovery response, cached into `mcp_capability`:
 | Agent | Server types | Scopes | Purpose |
 |---|---|---|---|
 | Hawkeye | `filesystem` · `object_store` · `mlflow` | `artifact:read` · `registry:read` | Read the artifact and any training lineage |
-| Thor | `python-exec` · `compute` · `vector_store` · `llm_provider` | `exec:run` · `artifact:read` | Run the eval; score against Atlas metrics |
+| Nat | `python-exec` · `compute` · `vector_store` · `llm_provider` | `exec:run` · `artifact:read` | Run the eval; score against Atlas metrics |
 | Fury | `mlflow` · `object_store` | `registry:write` · `artifact:write` | Register version, record lineage, gate promotion |
 | Falcon | `observability` · `notification` | `telemetry:write` · `alert:write` | Configure monitoring, wire alert channels |
 
