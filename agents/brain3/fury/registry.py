@@ -10,3 +10,35 @@ def find_existing(*, user_id, sha256, name, metadata_store):
     if model is None:
         return None
     return metadata_store.find_model_version_by_hash(model_id=model["id"], sha256=sha256)
+
+
+def register(*, user_id, name, model_version_id, manifest, verdict, eval_run_id, metadata_store):
+    """Link this version to its model's identity, and promote it if it earned that.
+
+    Identity linking happens unconditionally — a pending or failed version is still
+    part of a model's version history and needs to be findable as such. Promotion only
+    happens on a passing verdict (added in the next task).
+    """
+    model = metadata_store.find_model(user_id=user_id, name=name)
+    if model is None:
+        model_id = metadata_store.create_model(
+            user_id=user_id,
+            name=name,
+            model_class=manifest.get("model_class"),
+            task_type=manifest.get("task_type"),
+        )
+    else:
+        model_id = model["id"]
+
+    metadata_store.link_model_version(model_version_id=model_version_id, model_id=model_id)
+
+    if verdict != "pass":
+        status = "pending"
+        if verdict is not None:
+            status = "staging_failed"
+            metadata_store.update_model_version_status(
+                model_version_id=model_version_id, status=status
+            )
+        return {"model_id": model_id, "status": status, "archived_model_version_id": None}
+
+    raise NotImplementedError("promotion path added in the next task")
