@@ -81,3 +81,31 @@ class SupabaseMetadataStore:
             .execute()
         )
         return result.data[0] if result.data else None
+
+    def create_model(self, *, user_id, name, model_class, task_type):
+        model_id = f"mdl_{uuid.uuid4().hex}"
+        self.client.table("model").insert(
+            {
+                "id": model_id,
+                "user_id": user_id,
+                "name": name,
+                "model_class": model_class,
+                "task_type": task_type,
+            }
+        ).execute()
+        return model_id
+
+    def link_model_version(self, *, model_version_id, model_id):
+        self.client.table("model_version").update({"model_id": model_id}).eq(
+            "id", model_version_id
+        ).execute()
+
+    def promote_model_version(self, *, model_version_id, eval_run_id):
+        self.client.table("model_version").update(
+            {"status": "production", "promoted_from": eval_run_id}
+        ).eq("id", model_version_id).execute()
+
+    def archive_model_version(self, *, model_version_id):
+        self.client.table("model_version").update({"status": "archived"}).eq(
+            "id", model_version_id
+        ).execute()

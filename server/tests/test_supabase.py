@@ -239,3 +239,65 @@ def test_find_production_version_returns_none_when_nothing_is_live():
     store = SupabaseMetadataStore(client=fake_client)
 
     assert store.find_production_version(model_id="mdl_1") is None
+
+
+def test_create_model_inserts_a_row_and_returns_its_id():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    model_id = store.create_model(
+        user_id="u_1", name="fraud-classifier", model_class="LogisticRegression",
+        task_type="classification",
+    )
+
+    assert model_id.startswith("mdl_")
+    assert fake_client.calls == [
+        (
+            "model",
+            {
+                "id": model_id,
+                "user_id": "u_1",
+                "name": "fraud-classifier",
+                "model_class": "LogisticRegression",
+                "task_type": "classification",
+            },
+        )
+    ]
+
+
+def test_link_model_version_sets_the_model_id_on_one_row():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.link_model_version(model_version_id="mv_abc", model_id="mdl_1")
+
+    assert fake_client.calls == [
+        ("model_version", "update", {"model_id": "mdl_1"}, [("id", "mv_abc")])
+    ]
+
+
+def test_promote_model_version_sets_status_and_promoted_from():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.promote_model_version(model_version_id="mv_abc", eval_run_id="evr_1")
+
+    assert fake_client.calls == [
+        (
+            "model_version",
+            "update",
+            {"status": "production", "promoted_from": "evr_1"},
+            [("id", "mv_abc")],
+        )
+    ]
+
+
+def test_archive_model_version_sets_status_to_archived():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.archive_model_version(model_version_id="mv_abc")
+
+    assert fake_client.calls == [
+        ("model_version", "update", {"status": "archived"}, [("id", "mv_abc")])
+    ]
