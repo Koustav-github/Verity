@@ -10,16 +10,34 @@ def build_artifact(
     payload,
     sha256,
     user_id,
+    name,
     args,
     blob_store,
     metadata_store,
     identify_fn=None,
     evaluate_fn=None,
+    find_existing_fn=None,
+    register_fn=None,
     fixture_payload=None,
     fixture_descriptor=None,
 ):
     identify_fn = identify_fn or _default_identify
     evaluate_fn = evaluate_fn or _default_evaluate
+    find_existing_fn = find_existing_fn or _default_find_existing
+    register_fn = register_fn or _default_register
+
+    existing = find_existing_fn(
+        user_id=user_id, sha256=sha256, name=name, metadata_store=metadata_store
+    )
+    if existing is not None:
+        return {
+            "model_version_id": existing["id"],
+            "artifact_uri": existing["artifact_uri"],
+            "status": existing["status"],
+            "manifest": None,
+            "eval_run": None,
+            "deduplicated": True,
+        }
 
     artifact_uri = blob_store.put(sha256, payload)
 
@@ -104,3 +122,9 @@ def _default_evaluate(**kwargs):
     from execution.sandbox import execute
 
     return evaluate(execute_fn=execute, **kwargs)
+
+
+def _default_find_existing(**kwargs):
+    from agents.brain3.fury.registry import find_existing
+
+    return find_existing(**kwargs)

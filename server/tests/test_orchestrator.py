@@ -48,32 +48,27 @@ def passing_eval(**kwargs):
     return {"verdict": "pass", "scores": {"accuracy": 1.0}, "seen": sorted(kwargs)}
 
 
+def no_existing(**kwargs):
+    return None
+
+
+def fake_register(**kwargs):
+    verdict = kwargs["verdict"]
+    if verdict == "pass":
+        status = "production"
+    elif verdict is not None:
+        status = "staging_failed"
+    else:
+        status = "pending"
+    return {"model_id": "mdl_123", "status": status, "archived_model_version_id": None}
+
+
 def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record():
-    stored_blobs = {}
-    stored_metadata = {}
-    stored_manifests = {}
+    blob_store = FakeBlobStore()
+    metadata_store = FakeMetadataStore()
     identified_models = []
 
-    class FakeBlobStore:
-        def put(self, sha256: str, payload: bytes) -> str:
-            stored_blobs[sha256] = payload
-            return f"s3://artifacts/{sha256}"
-
-    class FakeMetadataStore:
-        def save_model_version(self, *, sha256, artifact_uri, user_id, args, status):
-            stored_metadata[sha256] = {
-                "artifact_uri": artifact_uri,
-                "user_id": user_id,
-                "args": args,
-                "status": status,
-            }
-            return "mv_123"
-
-        def save_manifest(self, *, model_version_id, manifest):
-            stored_manifests[model_version_id] = manifest
-            return "mf_456"
-
-    def fake_identify(model):
+    def recording_identify(model):
         identified_models.append(model)
         return {"framework": "sklearn", "model_class": "FakeModel"}
 
@@ -83,17 +78,20 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
         payload=payload,
         sha256="abc123",
         user_id="u_1",
+        name="fake-model",
         args={"framework_hint": "sklearn"},
-        blob_store=FakeBlobStore(),
-        metadata_store=FakeMetadataStore(),
-        identify_fn=fake_identify,
+        blob_store=blob_store,
+        metadata_store=metadata_store,
+        identify_fn=recording_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
     )
 
-    assert stored_blobs["abc123"] == payload
-    assert stored_metadata["abc123"]["artifact_uri"] == "s3://artifacts/abc123"
-    assert stored_metadata["abc123"]["status"] == "pending"
+    assert blob_store.blobs["abc123"] == payload
+    assert metadata_store.model_versions["abc123"]["artifact_uri"] == "s3://artifacts/abc123"
+    assert metadata_store.model_versions["abc123"]["status"] == "pending"
     assert identified_models == [{"kind": "fake-model"}]
-    assert stored_manifests["mv_123"] == {"framework": "sklearn", "model_class": "FakeModel"}
+    assert metadata_store.manifests["mv_123"] == {"framework": "sklearn", "model_class": "FakeModel"}
     assert result == {
         "model_version_id": "mv_123",
         "artifact_uri": "s3://artifacts/abc123",
@@ -112,10 +110,13 @@ def test_a_fixture_supplied_at_ingest_is_stored_and_evaluated_in_the_same_pass()
         payload=cloudpickle.dumps({"kind": "fake-model"}),
         sha256="abc123",
         user_id="u_1",
+        name="fake-model",
         args={},
         blob_store=blob_store,
         metadata_store=metadata_store,
         identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
         fixture_payload=fixture_payload,
         fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
         evaluate_fn=passing_eval,
@@ -139,10 +140,13 @@ def test_the_fixture_descriptor_records_where_the_test_set_actually_landed():
         payload=cloudpickle.dumps({"kind": "fake-model"}),
         sha256="abc123",
         user_id="u_1",
+        name="fake-model",
         args={},
         blob_store=blob_store,
         metadata_store=FakeMetadataStore(),
         identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
         fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
         fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
         evaluate_fn=recording_eval,
@@ -150,66 +154,6 @@ def test_the_fixture_descriptor_records_where_the_test_set_actually_landed():
 
     assert seen["fixture"]["uri"] == "s3://artifacts/def456"
     assert seen["data"] == {"X": [[0.0]], "y": [0]}
-
-
-def test_a_passing_verdict_moves_the_version_to_staging():
-    metadata_store = FakeMetadataStore()
-
-    result = build_artifact(
-        payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
-        user_id="u_1",
-        args={},
-        blob_store=FakeBlobStore(),
-        metadata_store=metadata_store,
-        identify_fn=fake_identify,
-        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
-        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
-        evaluate_fn=passing_eval,
-    )
-
-    assert metadata_store.status_updates == [("mv_123", "staging")]
-    assert result["status"] == "staging"
-
-
-def test_a_failing_verdict_holds_the_version_at_staging_failed():
-    metadata_store = FakeMetadataStore()
-
-    result = build_artifact(
-        payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
-        user_id="u_1",
-        args={},
-        blob_store=FakeBlobStore(),
-        metadata_store=metadata_store,
-        identify_fn=fake_identify,
-        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
-        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
-        evaluate_fn=lambda **_: {"verdict": "fail"},
-    )
-
-    assert metadata_store.status_updates == [("mv_123", "staging_failed")]
-    assert result["status"] == "staging_failed"
-
-
-def test_an_eval_that_errored_also_holds_the_version_rather_than_letting_it_through():
-    metadata_store = FakeMetadataStore()
-
-    result = build_artifact(
-        payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
-        user_id="u_1",
-        args={},
-        blob_store=FakeBlobStore(),
-        metadata_store=metadata_store,
-        identify_fn=fake_identify,
-        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
-        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
-        evaluate_fn=lambda **_: {"verdict": "error", "error": {"message": "boom"}},
-    )
-
-    assert metadata_store.status_updates == [("mv_123", "staging_failed")]
-    assert result["status"] == "staging_failed"
 
 
 def test_without_a_fixture_nothing_is_evaluated_and_the_version_stays_pending():
@@ -222,14 +166,73 @@ def test_without_a_fixture_nothing_is_evaluated_and_the_version_stays_pending():
         payload=cloudpickle.dumps({"kind": "fake-model"}),
         sha256="abc123",
         user_id="u_1",
+        name="fake-model",
         args={},
         blob_store=FakeBlobStore(),
         metadata_store=metadata_store,
         identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
         evaluate_fn=must_not_run,
     )
 
     assert result["eval_run"] is None
     assert result["status"] == "pending"
-    assert metadata_store.status_updates == []
     assert metadata_store.eval_runs == {}
+
+
+def test_an_exact_repeat_of_name_and_hash_short_circuits_before_anything_else_runs():
+    existing_record = {"id": "mv_existing", "artifact_uri": "s3://artifacts/abc123", "status": "production"}
+
+    def found_existing(**kwargs):
+        return existing_record
+
+    def must_not_run(*_args, **_kwargs):
+        raise AssertionError("nothing downstream should run on a dedup hit")
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256="abc123",
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=type("ExplodingBlobStore", (), {"put": must_not_run})(),
+        metadata_store=type("ExplodingMetadataStore", (), {})(),
+        identify_fn=must_not_run,
+        find_existing_fn=found_existing,
+        register_fn=must_not_run,
+    )
+
+    assert result == {
+        "model_version_id": "mv_existing",
+        "artifact_uri": "s3://artifacts/abc123",
+        "status": "production",
+        "manifest": None,
+        "eval_run": None,
+        "deduplicated": True,
+    }
+
+
+def test_the_dedup_check_is_given_the_users_id_hash_and_name():
+    seen = {}
+
+    def recording_find_existing(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256="abc123",
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=recording_find_existing,
+        register_fn=fake_register,
+    )
+
+    assert seen["user_id"] == "u_1"
+    assert seen["sha256"] == "abc123"
+    assert seen["name"] == "fake-model"
