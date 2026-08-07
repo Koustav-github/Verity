@@ -98,6 +98,7 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
         "status": "pending",
         "manifest": {"framework": "sklearn", "model_class": "FakeModel"},
         "eval_run": None,
+        "model_id": "mdl_123",
     }
 
 
@@ -236,3 +237,121 @@ def test_the_dedup_check_is_given_the_users_id_hash_and_name():
     assert seen["user_id"] == "u_1"
     assert seen["sha256"] == "abc123"
     assert seen["name"] == "fake-model"
+
+
+def test_a_passing_verdict_promotes_the_version_to_production():
+    metadata_store = FakeMetadataStore()
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256="abc123",
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=metadata_store,
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=passing_eval,
+    )
+
+    assert result["status"] == "production"
+
+
+def test_a_failing_verdict_holds_the_version_at_staging_failed():
+    metadata_store = FakeMetadataStore()
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256="abc123",
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=metadata_store,
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=lambda **_: {"verdict": "fail"},
+    )
+
+    assert result["status"] == "staging_failed"
+
+
+def test_an_eval_that_errored_also_holds_the_version_at_staging_failed():
+    metadata_store = FakeMetadataStore()
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256="abc123",
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=metadata_store,
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=lambda **_: {"verdict": "error", "error": {"message": "boom"}},
+    )
+
+    assert result["status"] == "staging_failed"
+
+
+def test_register_is_called_even_when_no_fixture_was_supplied():
+    seen = {}
+
+    def recording_register(**kwargs):
+        seen.update(kwargs)
+        return {"model_id": "mdl_1", "status": "pending", "archived_model_version_id": None}
+
+    build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256="abc123",
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=recording_register,
+    )
+
+    assert seen["verdict"] is None
+    assert seen["eval_run_id"] is None
+    assert seen["name"] == "fake-model"
+
+
+def test_register_receives_the_eval_run_id_and_verdict_when_an_eval_ran():
+    seen = {}
+
+    def recording_register(**kwargs):
+        seen.update(kwargs)
+        return {"model_id": "mdl_1", "status": "production", "archived_model_version_id": None}
+
+    build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256="abc123",
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=recording_register,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=passing_eval,
+    )
+
+    assert seen["verdict"] == "pass"
+    assert seen["eval_run_id"] == "evr_789"

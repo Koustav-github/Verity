@@ -1,9 +1,5 @@
 import cloudpickle
 
-# A verdict that isn't a clean pass leaves the version held, never promoted. Fury
-# decides production; this only decides whether the version earned a look.
-_STATUS_FOR_VERDICT = {"pass": "staging"}
-
 
 def build_artifact(
     *,
@@ -60,8 +56,9 @@ def build_artifact(
     )
     metadata_store.save_manifest(model_version_id=model_version_id, manifest=manifest)
 
-    status = "pending"
     eval_record = None
+    verdict = None
+    eval_run_id = None
     if fixture_payload is not None:
         eval_run = _evaluate(
             evaluate_fn=evaluate_fn,
@@ -74,18 +71,26 @@ def build_artifact(
         eval_run_id = metadata_store.save_eval_run(
             model_version_id=model_version_id, eval_run=eval_run
         )
-        status = _STATUS_FOR_VERDICT.get(eval_run["verdict"], "staging_failed")
-        metadata_store.update_model_version_status(
-            model_version_id=model_version_id, status=status
-        )
+        verdict = eval_run["verdict"]
         eval_record = {"id": eval_run_id, **eval_run}
+
+    registration = register_fn(
+        user_id=user_id,
+        name=name,
+        model_version_id=model_version_id,
+        manifest=manifest,
+        verdict=verdict,
+        eval_run_id=eval_run_id,
+        metadata_store=metadata_store,
+    )
 
     return {
         "model_version_id": model_version_id,
         "artifact_uri": artifact_uri,
-        "status": status,
+        "status": registration["status"],
         "manifest": manifest,
         "eval_run": eval_record,
+        "model_id": registration["model_id"],
     }
 
 
@@ -128,3 +133,9 @@ def _default_find_existing(**kwargs):
     from agents.brain3.fury.registry import find_existing
 
     return find_existing(**kwargs)
+
+
+def _default_register(**kwargs):
+    from agents.brain3.fury.registry import register
+
+    return register(**kwargs)
