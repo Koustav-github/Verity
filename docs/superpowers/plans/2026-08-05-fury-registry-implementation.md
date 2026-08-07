@@ -1196,7 +1196,6 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
         "status": "pending",
         "manifest": {"framework": "sklearn", "model_class": "FakeModel"},
         "eval_run": None,
-        "model_id": "mdl_123",
     }
 
 
@@ -1340,7 +1339,13 @@ def test_the_dedup_check_is_given_the_users_id_hash_and_name():
 Note what was deliberately dropped from the old file: the two tests asserting `status ==
 "staging"` / `"staging_failed"` on eval outcomes, and the one asserting an errored eval
 holds the version at `staging_failed`. Those move to Task 8, once `register_fn` is
-actually wired into the status decision instead of being a passthrough fake.
+actually wired into the status decision instead of being a passthrough fake. For the same
+reason, the first test's expected result has no `model_id` key — this task's code change
+only touches lines 1–24 (the dedup check) and leaves the function's tail, including its
+final `return` statement, untouched; `register_fn` is accepted as a parameter here but not
+yet called, so nothing populates `model_id` until Task 8 rewires that return statement too.
+`register_fn=fake_register` is still passed in these tests for forward compatibility with
+Task 8, even though it's unused at this stage.
 
 - [ ] **Step 2: Run tests to verify the new ones fail for the right reason**
 
