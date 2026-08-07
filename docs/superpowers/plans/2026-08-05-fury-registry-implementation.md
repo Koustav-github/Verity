@@ -1162,31 +1162,11 @@ def fake_register(**kwargs):
 
 
 def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record():
-    stored_blobs = {}
-    stored_metadata = {}
-    stored_manifests = {}
+    blob_store = FakeBlobStore()
+    metadata_store = FakeMetadataStore()
     identified_models = []
 
-    class FakeBlobStoreLocal:
-        def put(self, sha256: str, payload: bytes) -> str:
-            stored_blobs[sha256] = payload
-            return f"s3://artifacts/{sha256}"
-
-    class FakeMetadataStoreLocal:
-        def save_model_version(self, *, sha256, artifact_uri, user_id, args, status):
-            stored_metadata[sha256] = {
-                "artifact_uri": artifact_uri,
-                "user_id": user_id,
-                "args": args,
-                "status": status,
-            }
-            return "mv_123"
-
-        def save_manifest(self, *, model_version_id, manifest):
-            stored_manifests[model_version_id] = manifest
-            return "mf_456"
-
-    def fake_identify_local(model):
+    def recording_identify(model):
         identified_models.append(model)
         return {"framework": "sklearn", "model_class": "FakeModel"}
 
@@ -1198,18 +1178,18 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
         user_id="u_1",
         name="fake-model",
         args={"framework_hint": "sklearn"},
-        blob_store=FakeBlobStoreLocal(),
-        metadata_store=FakeMetadataStoreLocal(),
-        identify_fn=fake_identify_local,
+        blob_store=blob_store,
+        metadata_store=metadata_store,
+        identify_fn=recording_identify,
         find_existing_fn=no_existing,
         register_fn=fake_register,
     )
 
-    assert stored_blobs["abc123"] == payload
-    assert stored_metadata["abc123"]["artifact_uri"] == "s3://artifacts/abc123"
-    assert stored_metadata["abc123"]["status"] == "pending"
+    assert blob_store.blobs["abc123"] == payload
+    assert metadata_store.model_versions["abc123"]["artifact_uri"] == "s3://artifacts/abc123"
+    assert metadata_store.model_versions["abc123"]["status"] == "pending"
     assert identified_models == [{"kind": "fake-model"}]
-    assert stored_manifests["mv_123"] == {"framework": "sklearn", "model_class": "FakeModel"}
+    assert metadata_store.manifests["mv_123"] == {"framework": "sklearn", "model_class": "FakeModel"}
     assert result == {
         "model_version_id": "mv_123",
         "artifact_uri": "s3://artifacts/abc123",
