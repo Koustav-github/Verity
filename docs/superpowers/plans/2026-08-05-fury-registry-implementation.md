@@ -1578,15 +1578,55 @@ def test_register_receives_the_eval_run_id_and_verdict_when_an_eval_ran():
     assert seen["eval_run_id"] == "evr_789"
 ```
 
+This task's Step 3 makes `build_artifact`'s return dict unconditionally include
+`"model_id": registration["model_id"]`. Task 7's version of
+`test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record` deliberately
+had `model_id` *removed* from its expected result (Task 7's own code change didn't produce
+it yet) — now that this task's code does produce it, that same test needs it back, or its
+exact-dict assertion will fail once Step 3 lands. Restore the line now, in this same step:
+
+Find in `server/tests/test_orchestrator.py`:
+```python
+    assert result == {
+        "model_version_id": "mv_123",
+        "artifact_uri": "s3://artifacts/abc123",
+        "status": "pending",
+        "manifest": {"framework": "sklearn", "model_class": "FakeModel"},
+        "eval_run": None,
+    }
+```
+Replace with:
+```python
+    assert result == {
+        "model_version_id": "mv_123",
+        "artifact_uri": "s3://artifacts/abc123",
+        "status": "pending",
+        "manifest": {"framework": "sklearn", "model_class": "FakeModel"},
+        "eval_run": None,
+        "model_id": "mdl_123",
+    }
+```
+(`"mdl_123"` is what `fake_register`, already used by this test, always returns as
+`model_id` — see the module-level fake defined in Task 7.)
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
 cd server && uv run pytest tests/test_orchestrator.py -v
 ```
-Expected: the five new tests `FAIL`. `test_a_passing_verdict_promotes_the_version_to_production`
-fails on `assert result["status"] == "production"` (currently still `"staging"`, from the
-old `_STATUS_FOR_VERDICT` logic). The other four fail because `register_fn` is not called
-at all yet.
+Expected: only **three** of the five new tests actually fail here, not five — this is a
+real quirk of the old code worth understanding, not a sign something's wrong.
+`test_a_passing_verdict_promotes_the_version_to_production` fails (`"staging"` from the old
+`_STATUS_FOR_VERDICT` logic, not `"production"`), and the two `register_fn`-recording tests
+fail (a `KeyError` — `register_fn` isn't called at all under the old code, so `seen` stays
+empty). But `test_a_failing_verdict_holds_the_version_at_staging_failed` and
+`test_an_eval_that_errored_also_holds_the_version_at_staging_failed` **coincidentally
+already pass**: `_STATUS_FOR_VERDICT.get("fail"/"error", "staging_failed")` falls through
+to the same `"staging_failed"` default the new code also produces for those verdicts. Both
+tests remain fully valid — after Step 3 they pass for the new, correct reason
+(`register_fn`'s return value) rather than the old one, and that mechanism is what the rest
+of this task's test suite exists to prove. Don't try to force a 5-failure RED here; three
+is the real, reproducible count.
 
 - [ ] **Step 3: Wire `register_fn` into `build_artifact` and remove `_STATUS_FOR_VERDICT`**
 
