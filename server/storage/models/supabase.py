@@ -61,3 +61,23 @@ class SupabaseMetadataStore:
             .execute()
         )
         return result.data[0] if result.data else None
+
+    def find_model_version_by_hash(self, *, model_id, sha256):
+        result = (
+            self.client.table("model_version")
+            .select("*")
+            .eq("model_id", model_id)
+            .eq("artifact_sha256", sha256)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    def find_production_version(self, *, model_id):
+        result = (
+            self.client.table("model_version")
+            .select("*")
+            .eq("model_id", model_id)
+            .eq("status", "production")
+            .execute()
+        )
+        return result.data[0] if result.data else None

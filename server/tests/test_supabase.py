@@ -180,3 +180,62 @@ def test_find_model_returns_none_when_no_row_matches():
     store = SupabaseMetadataStore(client=fake_client)
 
     assert store.find_model(user_id="u_1", name="does-not-exist") is None
+
+
+def test_find_model_version_by_hash_returns_the_matching_version():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "model_version": [
+                {"id": "mv_1", "model_id": "mdl_1", "artifact_sha256": "abc123"},
+                {"id": "mv_2", "model_id": "mdl_1", "artifact_sha256": "def456"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    version = store.find_model_version_by_hash(model_id="mdl_1", sha256="abc123")
+
+    assert version == {"id": "mv_1", "model_id": "mdl_1", "artifact_sha256": "abc123"}
+    assert fake_client.calls == [
+        (
+            "model_version",
+            "select",
+            "*",
+            [("model_id", "mdl_1"), ("artifact_sha256", "abc123")],
+        )
+    ]
+
+
+def test_find_model_version_by_hash_returns_none_when_no_version_matches():
+    fake_client = FakeSupabaseClient(rows={"model_version": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_model_version_by_hash(model_id="mdl_1", sha256="nope") is None
+
+
+def test_find_production_version_returns_the_current_live_version():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "model_version": [
+                {"id": "mv_1", "model_id": "mdl_1", "status": "archived"},
+                {"id": "mv_2", "model_id": "mdl_1", "status": "production"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    version = store.find_production_version(model_id="mdl_1")
+
+    assert version == {"id": "mv_2", "model_id": "mdl_1", "status": "production"}
+    assert fake_client.calls == [
+        ("model_version", "select", "*", [("model_id", "mdl_1"), ("status", "production")])
+    ]
+
+
+def test_find_production_version_returns_none_when_nothing_is_live():
+    fake_client = FakeSupabaseClient(
+        rows={"model_version": [{"id": "mv_1", "model_id": "mdl_1", "status": "pending"}]}
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_production_version(model_id="mdl_1") is None
