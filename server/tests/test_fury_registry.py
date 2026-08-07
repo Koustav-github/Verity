@@ -151,3 +151,44 @@ def test_register_with_an_error_verdict_also_writes_staging_failed():
 
     assert result["status"] == "staging_failed"
     assert store.status_updates == [("mv_1", "staging_failed")]
+
+
+def test_register_with_a_passing_verdict_promotes_the_version_to_production():
+    store = FakeMetadataStore()
+
+    result = register(
+        user_id="u_1", name="fraud-classifier", model_version_id="mv_1",
+        manifest=MANIFEST, verdict="pass", eval_run_id="evr_1", metadata_store=store,
+    )
+
+    assert result["status"] == "production"
+    assert store.promotions == [("mv_1", "evr_1")]
+
+
+def test_register_with_a_passing_verdict_and_no_incumbent_archives_nothing():
+    store = FakeMetadataStore()
+
+    result = register(
+        user_id="u_1", name="fraud-classifier", model_version_id="mv_1",
+        manifest=MANIFEST, verdict="pass", eval_run_id="evr_1", metadata_store=store,
+    )
+
+    assert store.archived == []
+    assert result["archived_model_version_id"] is None
+
+
+def test_register_with_a_passing_verdict_archives_the_current_production_version():
+    class StoreWithIncumbent(FakeMetadataStore):
+        def find_production_version(self, *, model_id):
+            return {"id": "mv_old"}
+
+    store = StoreWithIncumbent(models={("u_1", "fraud-classifier"): {"id": "mdl_1"}})
+
+    result = register(
+        user_id="u_1", name="fraud-classifier", model_version_id="mv_new",
+        manifest=MANIFEST, verdict="pass", eval_run_id="evr_1", metadata_store=store,
+    )
+
+    assert store.archived == ["mv_old"]
+    assert result["archived_model_version_id"] == "mv_old"
+    assert store.promotions == [("mv_new", "evr_1")]

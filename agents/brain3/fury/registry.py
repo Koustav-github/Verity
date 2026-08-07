@@ -41,4 +41,11 @@ def register(*, user_id, name, model_version_id, manifest, verdict, eval_run_id,
             )
         return {"model_id": model_id, "status": status, "archived_model_version_id": None}
 
-    raise NotImplementedError("promotion path added in the next task")
+    incumbent = metadata_store.find_production_version(model_id=model_id)
+    archived_id = None
+    if incumbent is not None:
+        metadata_store.archive_model_version(model_version_id=incumbent["id"])
+        archived_id = incumbent["id"]
+
+    metadata_store.promote_model_version(model_version_id=model_version_id, eval_run_id=eval_run_id)
+    return {"model_id": model_id, "status": "production", "archived_model_version_id": archived_id}
