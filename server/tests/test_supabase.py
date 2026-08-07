@@ -1,13 +1,25 @@
 from storage.models.supabase import SupabaseMetadataStore
 
 
+class FakeResponse:
+    def __init__(self, data):
+        self.data = data
+
+
 class FakeTable:
-    def __init__(self, name, calls):
+    def __init__(self, name, calls, rows=None):
         self.name = name
         self.calls = calls
+        self.rows = rows if rows is not None else []
         self._payload = None
         self._verb = None
-        self._filters = None
+        self._filters = []
+        self._select_cols = None
+
+    def select(self, columns="*"):
+        self._verb = "select"
+        self._select_cols = columns
+        return self
 
     def insert(self, payload):
         self._verb = "insert"
@@ -20,22 +32,31 @@ class FakeTable:
         return self
 
     def eq(self, column, value):
-        self._filters = (column, value)
+        self._filters.append((column, value))
         return self
 
     def execute(self):
+        if self._verb == "select":
+            self.calls.append((self.name, "select", self._select_cols, list(self._filters)))
+            matches = [
+                row for row in self.rows
+                if all(row.get(col) == val for col, val in self._filters)
+            ]
+            return FakeResponse(matches)
         if self._verb == "update":
-            self.calls.append((self.name, "update", self._payload, self._filters))
-        else:
-            self.calls.append((self.name, self._payload))
+            self.calls.append((self.name, "update", self._payload, list(self._filters)))
+            return FakeResponse([])
+        self.calls.append((self.name, self._payload))
+        return FakeResponse([])
 
 
 class FakeSupabaseClient:
-    def __init__(self):
+    def __init__(self, rows=None):
         self.calls = []
+        self.rows = rows or {}
 
     def table(self, name):
-        return FakeTable(name, self.calls)
+        return FakeTable(name, self.calls, rows=self.rows.get(name, []))
 
 
 def test_save_model_version_inserts_a_row_and_returns_its_id():
@@ -131,5 +152,31 @@ def test_update_model_version_status_targets_exactly_one_row():
     store.update_model_version_status(model_version_id="mv_abc", status="staging")
 
     assert fake_client.calls == [
-        ("model_version", "update", {"status": "staging"}, ("id", "mv_abc"))
+        ("model_version", "update", {"status": "staging"}, [("id", "mv_abc")])
     ]
+
+
+def test_find_model_returns_the_row_matching_user_and_name():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "model": [
+                {"id": "mdl_1", "user_id": "u_1", "name": "fraud-classifier"},
+                {"id": "mdl_2", "user_id": "u_1", "name": "churn-model"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    model = store.find_model(user_id="u_1", name="fraud-classifier")
+
+    assert model == {"id": "mdl_1", "user_id": "u_1", "name": "fraud-classifier"}
+    assert fake_client.calls == [
+        ("model", "select", "*", [("user_id", "u_1"), ("name", "fraud-classifier")])
+    ]
+
+
+def test_find_model_returns_none_when_no_row_matches():
+    fake_client = FakeSupabaseClient(rows={"model": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_model(user_id="u_1", name="does-not-exist") is None

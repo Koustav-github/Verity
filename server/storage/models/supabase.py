@@ -51,3 +51,13 @@ class SupabaseMetadataStore:
         self.client.table("model_version").update({"status": status}).eq(
             "id", model_version_id
         ).execute()
+
+    def find_model(self, *, user_id, name):
+        result = (
+            self.client.table("model")
+            .select("*")
+            .eq("user_id", user_id)
+            .eq("name", name)
+            .execute()
+        )
+        return result.data[0] if result.data else None
