@@ -33,6 +33,7 @@ def get_build_artifact():
 async def ingest(
     artifact: UploadFile,
     user_id: str = Form(...),
+    name: str = Form(...),
     sha256: str = Form(...),
     args: str = Form("{}"),
     fixture: UploadFile | None = File(None),
@@ -47,6 +48,7 @@ async def ingest(
         payload = payload,
         sha256 = sha256,
         user_id=user_id,
+        name=name,
         args=json.loads(args),
         fixture_payload=fixture_payload,
         fixture_descriptor=json.loads(fixture_descriptor) if fixture_descriptor else None,
