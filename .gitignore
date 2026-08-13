@@ -16,8 +16,6 @@ eval_set.jsonl
 # Test model
 demo/
 .vscode/
-verity/tests
-storage/tests
 
 # Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
 .superpowers/
