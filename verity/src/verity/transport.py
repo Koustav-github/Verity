@@ -5,6 +5,7 @@ def upload(
         payload: bytes,
         sha256: str,
         user_id: str,
+        name: str,
         args: dict,
         endpoint: str,
         client: httpx.Client | None = None,
@@ -14,7 +15,7 @@ def upload(
 ) -> dict:
     client = client or httpx.Client(timeout=60.0)
     files = {"artifact": ("artifact", payload, "application/octet-stream")}
-    data = {"user_id": user_id, "sha256":sha256, "args": json.dumps(args)}
+    data = {"user_id": user_id, "name": name, "sha256":sha256, "args": json.dumps(args)}
 
     # Sent only when there is something to evaluate — the server reads their absence
     # as "identify this version but don't judge it yet".
