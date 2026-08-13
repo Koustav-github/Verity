@@ -22,19 +22,25 @@ five minutes.
 
 ## Current status
 
-The RAG-eval engine (interrogation pipeline + faithfulness / answer-relevance /
-context-relevance metrics, local-first with optional LLM escalation) is the part already
-built and tested (`verity/`). It is **Nat's scoring engine for V4**, not the starting
-point — the roadmap is sequenced by the agentic loop, and the loop has to work end-to-end
-for one simple model class before it earns the right to handle RAG.
+V1's loop is three-quarters built. Hawkeye (identification), Nat (evaluation), and Fury
+(registry) are implemented, tested (101 server tests + 21 SDK tests, TDD throughout), and
+verified live against real infrastructure — AWS S3, Supabase, and Groq as the LLM provider.
+One call, `verity.assemble(model, name=..., user_id=..., X_test=..., y_test=...)`, now runs
+the whole chain: identify the framework and task, evaluate against a labeled holdout with
+quality and systemic metrics (latency, memory, CPU, GPU) gating equally, and — on a pass —
+promote straight to `production`, archiving whatever version it replaces.
 
-So `verity/` sits ahead of where the build starts. That is deliberate, not a mistake: it
-is a finished component waiting for the pipeline that will call it, and V1 deliberately
-uses a simpler eval mechanism (labeled holdout) to prove the loop with fewer moving parts.
+Falcon (observability) and api-fication (actually serving a `production` model) don't exist
+yet, so "monitored production service" isn't true end-to-end — nothing currently answers a
+real inference request for a promoted model.
 
-Nothing of the agentic pipeline itself exists yet. `server/` is a stub, `client/` is an
-untouched scaffold, and `demo/` holds a containerized sklearn model that serves as the
-first real test subject for V1.
+`verity/`'s original interrogation-pipeline eval engine (faithfulness / answer-relevance /
+context-relevance) was deleted before this build started; `verity/` is now the client SDK
+only, and an active part of the build rather than a finished component waiting on it.
+
+`client/` remains an untouched Next.js scaffold. `demo/` still holds the sklearn/ONNX
+Titanic model used as the first real V1 test subject. Full detail on what's built and how
+it behaves lives in `progression.md`.
 
 ---
 
