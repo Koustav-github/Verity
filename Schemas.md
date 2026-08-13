@@ -31,7 +31,7 @@ The logical model, stable across versions.
 |---|---|---|
 | `id` | text PK | `mdl_…` |
 | `user_id` | text | owns this model; `UNIQUE (user_id, name)` — a name is unique per user, not globally, until `org_id` replaces `user_id` as the tenancy boundary at V1.5 |
-| `name` | text | unique per org |
+| `name` | text | unique per user today (see `user_id`'s note); becomes unique per org at V1.5 |
 | `model_class` | text | `ML` · `DL` · `RL` · `LLM_APP` · `RAG` · `AGENTIC` |
 | `task_type` | text | Atlas lookup key, e.g. `binary_classification` |
 | `created_at` | timestamptz | |
