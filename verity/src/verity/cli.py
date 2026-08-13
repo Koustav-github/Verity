@@ -11,6 +11,7 @@ def main(argv=None, assemble_fn=assemble):
     parser.add_argument("--demo", action="store_true", help="use a tiny built-in demo model instead of a file")
     parser.add_argument("--test-set", help="path to a cloudpickled (X_test, y_test) tuple to evaluate against")
     parser.add_argument("--user-id", required=True)
+    parser.add_argument("--name", required=True, help="identifies this model across versions")
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000")
     args = parser.parse_args(argv)
 
@@ -37,6 +38,7 @@ def main(argv=None, assemble_fn=assemble):
     result = assemble_fn(
         model,
         user_id=args.user_id,
+        name=args.name,
         endpoint=args.endpoint,
         X_test=X_test,
         y_test=y_test,
