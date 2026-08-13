@@ -1,3 +1,5 @@
+import pytest
+
 from storage.models.supabase import SupabaseMetadataStore
 
 
@@ -35,17 +37,23 @@ class FakeTable:
         self._filters.append((column, value))
         return self
 
+    def _matching_rows(self):
+        return [
+            row for row in self.rows
+            if all(row.get(col) == val for col, val in self._filters)
+        ]
+
     def execute(self):
         if self._verb == "select":
             self.calls.append((self.name, "select", self._select_cols, list(self._filters)))
-            matches = [
-                row for row in self.rows
-                if all(row.get(col) == val for col, val in self._filters)
-            ]
-            return FakeResponse(matches)
+            return FakeResponse(self._matching_rows())
         if self._verb == "update":
             self.calls.append((self.name, "update", self._payload, list(self._filters)))
-            return FakeResponse([])
+            # Real PostgREST returns the affected row(s) here (representation mode) —
+            # an update matching zero rows comes back with an empty data array, which is
+            # exactly the "silently did nothing" case the four registry mutations must
+            # detect and raise on rather than reporting a false success.
+            return FakeResponse(self._matching_rows())
         self.calls.append((self.name, self._payload))
         return FakeResponse([])
 
@@ -146,7 +154,7 @@ def test_save_eval_run_inserts_the_verdict_and_the_evidence_behind_it():
 
 
 def test_update_model_version_status_targets_exactly_one_row():
-    fake_client = FakeSupabaseClient()
+    fake_client = FakeSupabaseClient(rows={"model_version": [{"id": "mv_abc"}]})
     store = SupabaseMetadataStore(client=fake_client)
 
     store.update_model_version_status(model_version_id="mv_abc", status="staging")
@@ -154,6 +162,14 @@ def test_update_model_version_status_targets_exactly_one_row():
     assert fake_client.calls == [
         ("model_version", "update", {"status": "staging"}, [("id", "mv_abc")])
     ]
+
+
+def test_update_model_version_status_raises_when_it_affects_no_rows():
+    fake_client = FakeSupabaseClient(rows={"model_version": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    with pytest.raises(ValueError):
+        store.update_model_version_status(model_version_id="mv_missing", status="staging")
 
 
 def test_find_model_returns_the_row_matching_user_and_name():
@@ -266,7 +282,7 @@ def test_create_model_inserts_a_row_and_returns_its_id():
 
 
 def test_link_model_version_sets_the_model_id_on_one_row():
-    fake_client = FakeSupabaseClient()
+    fake_client = FakeSupabaseClient(rows={"model_version": [{"id": "mv_abc"}]})
     store = SupabaseMetadataStore(client=fake_client)
 
     store.link_model_version(model_version_id="mv_abc", model_id="mdl_1")
@@ -276,8 +292,16 @@ def test_link_model_version_sets_the_model_id_on_one_row():
     ]
 
 
+def test_link_model_version_raises_when_it_affects_no_rows():
+    fake_client = FakeSupabaseClient(rows={"model_version": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    with pytest.raises(ValueError):
+        store.link_model_version(model_version_id="mv_missing", model_id="mdl_1")
+
+
 def test_promote_model_version_sets_status_and_promoted_from():
-    fake_client = FakeSupabaseClient()
+    fake_client = FakeSupabaseClient(rows={"model_version": [{"id": "mv_abc"}]})
     store = SupabaseMetadataStore(client=fake_client)
 
     store.promote_model_version(model_version_id="mv_abc", eval_run_id="evr_1")
@@ -292,8 +316,16 @@ def test_promote_model_version_sets_status_and_promoted_from():
     ]
 
 
+def test_promote_model_version_raises_when_it_affects_no_rows():
+    fake_client = FakeSupabaseClient(rows={"model_version": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    with pytest.raises(ValueError):
+        store.promote_model_version(model_version_id="mv_missing", eval_run_id="evr_1")
+
+
 def test_archive_model_version_sets_status_to_archived():
-    fake_client = FakeSupabaseClient()
+    fake_client = FakeSupabaseClient(rows={"model_version": [{"id": "mv_abc"}]})
     store = SupabaseMetadataStore(client=fake_client)
 
     store.archive_model_version(model_version_id="mv_abc")
@@ -301,3 +333,11 @@ def test_archive_model_version_sets_status_to_archived():
     assert fake_client.calls == [
         ("model_version", "update", {"status": "archived"}, [("id", "mv_abc")])
     ]
+
+
+def test_archive_model_version_raises_when_it_affects_no_rows():
+    fake_client = FakeSupabaseClient(rows={"model_version": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    with pytest.raises(ValueError):
+        store.archive_model_version(model_version_id="mv_missing")

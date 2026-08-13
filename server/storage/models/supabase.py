@@ -48,9 +48,16 @@ class SupabaseMetadataStore:
         return eval_run_id
 
     def update_model_version_status(self, *, model_version_id, status):
-        self.client.table("model_version").update({"status": status}).eq(
-            "id", model_version_id
-        ).execute()
+        result = (
+            self.client.table("model_version")
+            .update({"status": status})
+            .eq("id", model_version_id)
+            .execute()
+        )
+        if not result.data:
+            raise ValueError(
+                f"update_model_version_status affected no rows for model_version_id={model_version_id!r}"
+            )
 
     def find_model(self, *, user_id, name):
         result = (
@@ -96,16 +103,37 @@ class SupabaseMetadataStore:
         return model_id
 
     def link_model_version(self, *, model_version_id, model_id):
-        self.client.table("model_version").update({"model_id": model_id}).eq(
-            "id", model_version_id
-        ).execute()
+        result = (
+            self.client.table("model_version")
+            .update({"model_id": model_id})
+            .eq("id", model_version_id)
+            .execute()
+        )
+        if not result.data:
+            raise ValueError(
+                f"link_model_version affected no rows for model_version_id={model_version_id!r}"
+            )
 
     def promote_model_version(self, *, model_version_id, eval_run_id):
-        self.client.table("model_version").update(
-            {"status": "production", "promoted_from": eval_run_id}
-        ).eq("id", model_version_id).execute()
+        result = (
+            self.client.table("model_version")
+            .update({"status": "production", "promoted_from": eval_run_id})
+            .eq("id", model_version_id)
+            .execute()
+        )
+        if not result.data:
+            raise ValueError(
+                f"promote_model_version affected no rows for model_version_id={model_version_id!r}"
+            )
 
     def archive_model_version(self, *, model_version_id):
-        self.client.table("model_version").update({"status": "archived"}).eq(
-            "id", model_version_id
-        ).execute()
+        result = (
+            self.client.table("model_version")
+            .update({"status": "archived"})
+            .eq("id", model_version_id)
+            .execute()
+        )
+        if not result.data:
+            raise ValueError(
+                f"archive_model_version affected no rows for model_version_id={model_version_id!r}"
+            )
