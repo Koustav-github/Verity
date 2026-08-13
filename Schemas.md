@@ -30,10 +30,18 @@ The logical model, stable across versions.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | text PK | `mdl_…` |
+| `user_id` | text | owns this model; `UNIQUE (user_id, name)` — a name is unique per user, not globally, until `org_id` replaces `user_id` as the tenancy boundary at V1.5 |
 | `name` | text | unique per org |
 | `model_class` | text | `ML` · `DL` · `RL` · `LLM_APP` · `RAG` · `AGENTIC` |
 | `task_type` | text | Atlas lookup key, e.g. `binary_classification` |
 | `created_at` | timestamptz | |
+
+`model_class` is aspirational as written above: the shipped registry
+(`agents/brain3/fury/registry.py`) copies this value straight from Hawkeye's manifest,
+which is a framework class name like `LogisticRegression` (see
+`agents/brain1/hawkeye/identify.py`), not one of the `ML` · `DL` · `RL` · `LLM_APP` ·
+`RAG` · `AGENTIC` taxonomy values. Reconciling the stored value with the declared
+taxonomy is open.
 
 ### `model_version`
 One row per distinct artifact. **Version identity is the content hash** — re-registering an
@@ -46,13 +54,18 @@ unchanged artifact dedupes; any byte change is inherently a new version.
 | `artifact_sha256` | text | unique per model; the version identity |
 | `artifact_uri` | text | where it lives (not necessarily custody) |
 | `artifact_bytes` | bigint | drives custody vs. pointer decision |
-| `status` | text | `pending` · `staging` · `staging_failed` · `production` · `retired` |
+| `status` | text | `pending` · `staging` · `staging_failed` · `production` · `archived` |
 | `manifest_id` | text FK → `manifest` | |
 | `promoted_from` | text FK → `eval_run` | the evidence that promoted it; null if never promoted |
 | `created_at` | timestamptz | |
 
 `promoted_from` is the important one: promotion is a *consequence of evidence*, and the row
 records which evidence. A production version with a null `promoted_from` is an incident.
+
+`staging` is presently unreachable: the shipped Fury pipeline evaluates a version and, on a
+passing verdict, promotes it straight from `pending` to `production` — there is no
+intermediate stop. The `staging` state is pending api-fication (a review/approval step
+between eval and promotion), per the design spec.
 
 ### `manifest`
 Hawkeye's output. Append-only.

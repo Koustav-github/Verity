@@ -63,7 +63,7 @@ All four agents, shallow, single path. No multi-tenancy, no dashboard, no alerti
 |---|---|
 | Hawkeye | sklearn / ONNX artifact → `model_manifest.json`; flags unrecoverable semantics |
 | Nat | Atlas lookup → metric set; labeled-holdout eval; pass/fail gate |
-| Fury | content-hash version identity; staging → production on gate pass |
+| Fury | content-hash version identity; a passing verdict promotes straight to production |
 | Falcon | in-process SDK; request count, latency percentiles, error rate |
 
 ```
