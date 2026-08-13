@@ -17,7 +17,7 @@ def register(*, user_id, name, model_version_id, manifest, verdict, eval_run_id,
 
     Identity linking happens unconditionally — a pending or failed version is still
     part of a model's version history and needs to be findable as such. Promotion only
-    happens on a passing verdict (added in the next task).
+    happens on a passing verdict.
     """
     model = metadata_store.find_model(user_id=user_id, name=name)
     if model is None:
