@@ -8,6 +8,7 @@ from verity.transport import upload
 def assemble(
     model,
     user_id: str,
+    name: str,
     endpoint: str = "http://localhost:8000",
     client: httpx.Client | None = None,
     X_test=None,
@@ -16,6 +17,9 @@ def assemble(
     **args,
 ) -> dict:
     """Upload a trained model for identification, evaluation, and monitoring.
+
+    `name` identifies this model across uploads — re-uploading under the same name
+    registers a new version of the same model; a new name starts a new one.
 
     Pass X_test/y_test to have the model evaluated and gated in the same call. Pass
     `fixture` instead — a (payload, descriptor) pair from verity.fixture — for kinds
@@ -28,6 +32,7 @@ def assemble(
         payload=payload,
         sha256=sha256,
         user_id=user_id,
+        name=name,
         args=args,
         endpoint=endpoint,
         client=client,
