@@ -17,5 +17,34 @@ the record is being maintained after the reboot
      model scoring accuracy 1.0 still fails on a latency threshold.
    - Caveat, deliberately: those numbers are single-process, single-client, cold
      sandbox. Feasibility, not production p99. Real load is Falcon's.
-   Still not automated past here: Fury, promotion to production, `promoted_from`.
-4. shifted the workflow to aws service. There were several cahllenges with seaweedfs, first i had to get a virtual machine, for hosting seaweedfs distributed storage or else there was no possible way. got the free aws account with $100 free credits, so spun up a s3 bucket, we could have also done a ec2 instance, but utilizing better infra as available.
+
+4. shifted the workflow to aws service. There were several challenges with seaweedfs, first i had to get a virtual machine, for hosting seaweedfs distributed storage or else there was no possible way. got the free aws account with $100 free credits, so spun up a s3 bucket, we could have also done a ec2 instance, but utilizing better infra since available.
+
+5. Fury (agent 3, registry) is in. The Hawkeye -> Nat -> Fury handoff is automatic now —
+   one `/ingest` call identifies, evaluates, AND registers. This changes what entry 3 said:
+   a passing verdict no longer stops at `staging` — it goes straight to `production`, since
+   Fury is what actually decides promotion now, not the eval step itself. `staging` is
+   effectively retired as a resting state; `staging_failed` and `pending` are unaffected.
+   - `name` is now required on every upload (`assemble(model, name=..., ...)`), and it's
+     the only thing that decides "is this a new model or a new version of one I already
+     know." Uploads grouped under the same name share one `model` row and one lineage.
+   - Exact byte-for-byte re-uploads under the same name are a true no-op — checked before
+     anything else runs, so a repeat costs nothing (no Hawkeye call, no Nat call, no
+     sandbox execution). Verified live: re-uploading an identical model returned the
+     existing record with `deduplicated: true`, no new row.
+   - Promotion is fully automatic on a passing verdict, with no comparison against the
+     incumbent — a new version that clears its own thresholds replaces whatever's
+     currently `production`, and the one it replaces moves to `archived`. Both keep their
+     own `promoted_from` pointer to the eval_run that justified them, so the archived
+     version's evidence isn't lost. Verified live end-to-end against real S3/Supabase/Groq:
+     first version of a new model -> production; a second version -> production, first ->
+     archived; the same second version re-uploaded -> deduped, no new row.
+   - Accepted, undecided risk, not solved here: a version that barely clears its own bar
+     can replace an incumbent that was scoring far better, since nothing compares them.
+     Mitigated only by visibility (both eval_runs stay on record), not prevented.
+   - Fixed along the way, not code: a real repo-hygiene bug where `verity/tests` was
+     gitignored, so every prior commit touching SDK tests had silently no-op'd across this
+     whole project — the suite existed on disk but was never actually in git history until
+     this was caught and fixed.
+   Still not automated past here: api-fication (nothing actually serves a `production`
+   model yet), Falcon, the `agent_run` audit trail, comparative promotion gating.
