@@ -39,5 +39,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Downgrade schema."""
+    # Lossy and unrecoverable: dropping these columns destroys all version->model
+    # grouping and all promotion provenance. There is no shadow copy of this data
+    # anywhere else, so running this downgrade is a one-way trip.
     op.drop_column("model_version", "promoted_from")
     op.drop_column("model_version", "model_id")
