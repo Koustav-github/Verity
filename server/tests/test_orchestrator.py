@@ -1,6 +1,15 @@
+import hashlib
+
 import cloudpickle
+import pytest
 
 from orchestrator import build_artifact
+
+# All the fixture-model tests below share this exact payload, so its real digest is a
+# fixed constant. build_artifact now verifies the claimed sha256 against the payload's
+# actual bytes, so tests need a genuinely matching pair rather than an arbitrary label.
+FAKE_MODEL_PAYLOAD = cloudpickle.dumps({"kind": "fake-model"})
+FAKE_MODEL_SHA256 = hashlib.sha256(FAKE_MODEL_PAYLOAD).hexdigest()
 
 
 class FakeBlobStore:
@@ -76,7 +85,7 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
 
     result = build_artifact(
         payload=payload,
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={"framework_hint": "sklearn"},
@@ -87,18 +96,20 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
         register_fn=fake_register,
     )
 
-    assert blob_store.blobs["abc123"] == payload
-    assert metadata_store.model_versions["abc123"]["artifact_uri"] == "s3://artifacts/abc123"
-    assert metadata_store.model_versions["abc123"]["status"] == "pending"
+    assert blob_store.blobs[FAKE_MODEL_SHA256] == payload
+    assert metadata_store.model_versions[FAKE_MODEL_SHA256]["artifact_uri"] == f"s3://artifacts/{FAKE_MODEL_SHA256}"
+    assert metadata_store.model_versions[FAKE_MODEL_SHA256]["status"] == "pending"
     assert identified_models == [{"kind": "fake-model"}]
     assert metadata_store.manifests["mv_123"] == {"framework": "sklearn", "model_class": "FakeModel"}
     assert result == {
         "model_version_id": "mv_123",
-        "artifact_uri": "s3://artifacts/abc123",
+        "artifact_uri": f"s3://artifacts/{FAKE_MODEL_SHA256}",
         "status": "pending",
         "manifest": {"framework": "sklearn", "model_class": "FakeModel"},
         "eval_run": None,
         "model_id": "mdl_123",
+        "deduplicated": False,
+        "archived_model_version_id": None,
     }
 
 
@@ -109,7 +120,7 @@ def test_a_fixture_supplied_at_ingest_is_stored_and_evaluated_in_the_same_pass()
 
     result = build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -139,7 +150,7 @@ def test_the_fixture_descriptor_records_where_the_test_set_actually_landed():
 
     build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -165,7 +176,7 @@ def test_without_a_fixture_nothing_is_evaluated_and_the_version_stays_pending():
 
     result = build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -183,7 +194,12 @@ def test_without_a_fixture_nothing_is_evaluated_and_the_version_stays_pending():
 
 
 def test_an_exact_repeat_of_name_and_hash_short_circuits_before_anything_else_runs():
-    existing_record = {"id": "mv_existing", "artifact_uri": "s3://artifacts/abc123", "status": "production"}
+    existing_record = {
+        "id": "mv_existing",
+        "artifact_uri": f"s3://artifacts/{FAKE_MODEL_SHA256}",
+        "status": "production",
+        "model_id": "mdl_existing",
+    }
 
     def found_existing(**kwargs):
         return existing_record
@@ -193,7 +209,7 @@ def test_an_exact_repeat_of_name_and_hash_short_circuits_before_anything_else_ru
 
     result = build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -206,12 +222,67 @@ def test_an_exact_repeat_of_name_and_hash_short_circuits_before_anything_else_ru
 
     assert result == {
         "model_version_id": "mv_existing",
-        "artifact_uri": "s3://artifacts/abc123",
+        "artifact_uri": f"s3://artifacts/{FAKE_MODEL_SHA256}",
         "status": "production",
         "manifest": None,
         "eval_run": None,
         "deduplicated": True,
+        "model_id": "mdl_existing",
     }
+
+
+def test_build_artifact_rejects_a_payload_whose_actual_digest_does_not_match_the_claimed_sha256():
+    payload = cloudpickle.dumps({"kind": "fake-model"})
+
+    with pytest.raises(ValueError):
+        build_artifact(
+            payload=payload,
+            sha256="not-the-real-digest-of-this-payload",
+            user_id="u_1",
+            name="fake-model",
+            args={},
+            blob_store=FakeBlobStore(),
+            metadata_store=FakeMetadataStore(),
+            identify_fn=fake_identify,
+            find_existing_fn=no_existing,
+            register_fn=fake_register,
+        )
+
+
+def test_an_upload_with_a_fixture_is_not_deduped_even_if_an_identical_no_fixture_upload_exists():
+    existing_record = {"id": "mv_existing", "artifact_uri": f"s3://artifacts/{FAKE_MODEL_SHA256}", "status": "pending"}
+
+    def found_existing(**kwargs):
+        return existing_record
+
+    blob_store = FakeBlobStore()
+    metadata_store = FakeMetadataStore()
+    identify_calls = []
+
+    def recording_identify(model):
+        identify_calls.append(model)
+        return {"framework": "sklearn", "model_class": "FakeModel"}
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256=FAKE_MODEL_SHA256,
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=blob_store,
+        metadata_store=metadata_store,
+        identify_fn=recording_identify,
+        find_existing_fn=found_existing,
+        register_fn=fake_register,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=passing_eval,
+    )
+
+    assert identify_calls == [{"kind": "fake-model"}]
+    assert metadata_store.eval_runs["mv_123"]["verdict"] == "pass"
+    assert result.get("deduplicated") is not True
+    assert result["status"] == "production"
 
 
 def test_the_dedup_check_is_given_the_users_id_hash_and_name():
@@ -223,7 +294,7 @@ def test_the_dedup_check_is_given_the_users_id_hash_and_name():
 
     build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -235,7 +306,7 @@ def test_the_dedup_check_is_given_the_users_id_hash_and_name():
     )
 
     assert seen["user_id"] == "u_1"
-    assert seen["sha256"] == "abc123"
+    assert seen["sha256"] == FAKE_MODEL_SHA256
     assert seen["name"] == "fake-model"
 
 
@@ -244,7 +315,7 @@ def test_a_passing_verdict_promotes_the_version_to_production():
 
     result = build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -266,7 +337,7 @@ def test_a_failing_verdict_holds_the_version_at_staging_failed():
 
     result = build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -288,7 +359,7 @@ def test_an_eval_that_errored_also_holds_the_version_at_staging_failed():
 
     result = build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -314,7 +385,7 @@ def test_register_is_called_even_when_no_fixture_was_supplied():
 
     build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -339,7 +410,7 @@ def test_register_receives_the_eval_run_id_and_verdict_when_an_eval_ran():
 
     build_artifact(
         payload=cloudpickle.dumps({"kind": "fake-model"}),
-        sha256="abc123",
+        sha256=FAKE_MODEL_SHA256,
         user_id="u_1",
         name="fake-model",
         args={},
@@ -355,3 +426,26 @@ def test_register_receives_the_eval_run_id_and_verdict_when_an_eval_ran():
 
     assert seen["verdict"] == "pass"
     assert seen["eval_run_id"] == "evr_789"
+
+
+def test_the_final_response_surfaces_which_version_was_archived_by_a_promotion():
+    def register_that_displaces_an_incumbent(**kwargs):
+        return {"model_id": "mdl_1", "status": "production", "archived_model_version_id": "mv_old"}
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256=FAKE_MODEL_SHA256,
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=register_that_displaces_an_incumbent,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=passing_eval,
+    )
+
+    assert result["archived_model_version_id"] == "mv_old"

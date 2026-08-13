@@ -1,3 +1,5 @@
+import hashlib
+
 import cloudpickle
 
 
@@ -22,18 +24,35 @@ def build_artifact(
     find_existing_fn = find_existing_fn or _default_find_existing
     register_fn = register_fn or _default_register
 
-    existing = find_existing_fn(
-        user_id=user_id, sha256=sha256, name=name, metadata_store=metadata_store
-    )
-    if existing is not None:
-        return {
-            "model_version_id": existing["id"],
-            "artifact_uri": existing["artifact_uri"],
-            "status": existing["status"],
-            "manifest": None,
-            "eval_run": None,
-            "deduplicated": True,
-        }
+    # The client claims this digest; never trust it as-is. It's used as the S3 key, the
+    # artifact_sha256 column, and (via dedup) the identity that decides which existing
+    # model_version record a caller gets back — including its status. A client claiming
+    # someone else's already-registered digest while sending different bytes must not be
+    # able to walk away with that other version's record.
+    actual_sha256 = hashlib.sha256(payload).hexdigest()
+    if actual_sha256 != sha256:
+        raise ValueError(
+            f"claimed sha256 {sha256!r} does not match the payload's actual digest {actual_sha256!r}"
+        )
+
+    # Dedup only short-circuits when there's nothing new to evaluate. A fixture-bearing
+    # upload always runs the full pipeline, even if an identical no-fixture upload was
+    # already registered under this name/hash — otherwise the fixture the caller just
+    # attached would be silently discarded and the version stranded at `pending` forever.
+    if fixture_payload is None:
+        existing = find_existing_fn(
+            user_id=user_id, sha256=sha256, name=name, metadata_store=metadata_store
+        )
+        if existing is not None:
+            return {
+                "model_version_id": existing["id"],
+                "artifact_uri": existing["artifact_uri"],
+                "status": existing["status"],
+                "manifest": None,
+                "eval_run": None,
+                "deduplicated": True,
+                "model_id": existing["model_id"],
+            }
 
     artifact_uri = blob_store.put(sha256, payload)
 
@@ -91,6 +110,8 @@ def build_artifact(
         "manifest": manifest,
         "eval_run": eval_record,
         "model_id": registration["model_id"],
+        "deduplicated": False,
+        "archived_model_version_id": registration["archived_model_version_id"],
     }
 
 
