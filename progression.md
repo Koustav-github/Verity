@@ -48,3 +48,23 @@ the record is being maintained after the reboot
      this was caught and fixed.
    Still not automated past here: api-fication (nothing actually serves a `production`
    model yet), Falcon, the `agent_run` audit trail, comparative promotion gating.
+
+6. `client/` is no longer an untouched scaffold — added an MVP intake form (single page,
+   `client/src/app/page.tsx`) that calls `/ingest` directly from the browser and renders
+   the real response: manifest, per-threshold pass/fail, a verdict stamp. Ships a bundled
+   demo model+fixture (`client/public/demo/`) so the whole Hawkeye->Nat->Fury loop is one
+   click, no Python needed to try it.
+   - The server had no CORS config at all — added it, scoped to localhost:3000, since a
+     browser can't call a cross-origin API without it.
+   - Client-side SHA-256 (Web Crypto) computes the same digest the server now verifies
+     (the fix-wave's finding #3) — the frontend can't get away with a stale/wrong hash
+     any more than the CLI can.
+   - Fixed a second gitignore-too-broad bug, same category as `verity/tests`: the root
+     `.gitignore`'s bare `demo/` pattern was also silently matching `client/public/demo/`
+     — scoped it to `/demo/` (root only).
+   - Verified against the real backend, not just a build check: a Node script replicating
+     the exact browser flow confirmed all three response shapes the UI renders — pass to
+     production, an archived-replacement, and a deduplicated repeat.
+   Still frontend-only for identify+evaluate+register; there's no view of a model once
+   registered (no GET endpoint exists server-side yet), so this only ever shows the result
+   of the upload just made, not a history/dashboard.

@@ -38,9 +38,11 @@ real inference request for a promoted model.
 context-relevance) was deleted before this build started; `verity/` is now the client SDK
 only, and an active part of the build rather than a finished component waiting on it.
 
-`client/` remains an untouched Next.js scaffold. `demo/` still holds the sklearn/ONNX
-Titanic model used as the first real V1 test subject. Full detail on what's built and how
-it behaves lives in `progression.md`.
+`client/` has a minimal intake form for exercising the loop by hand — upload a model
+(bundled demo included, no Python required) and watch Hawkeye, Nat, and Fury's real
+output render. It's a test harness, not a dashboard: there's no view of a model once
+registered. `demo/` still holds the sklearn/ONNX Titanic model used as the first real
+V1 test subject. Full detail on what's built and how it behaves lives in `progression.md`.
 
 ---
 
