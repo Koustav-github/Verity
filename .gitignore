@@ -13,8 +13,9 @@ dist/
 # Generated eval artifacts
 eval_set.jsonl
 
-# Test model
-demo/
+# Test model (root-level only — a bare "demo/" also matched client/public/demo/,
+# which holds committed static assets for the frontend's demo flow)
+/demo/
 .vscode/
 
 # Subagent-driven-development scratch workspace (ledgers, briefs, review packages)

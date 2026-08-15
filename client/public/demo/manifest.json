@@ -1,0 +1,13 @@
+{
+  "model_sha256": "75e6c5960941d6451a5fb4f5ef048c15ad28478d3aa7b4441a002af768cc5192",
+  "model_bytes": 674,
+  "fixture_descriptor": {
+    "kind": "labeled_holdout",
+    "sha256": "a8c1b110edf9718abbeb4ed9f835203ff5cacff089112df4e7492bcd1f886764",
+    "spec": {
+      "n_samples": 4,
+      "n_features": 1
+    }
+  },
+  "fixture_bytes": 60
+}
