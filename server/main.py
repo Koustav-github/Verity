@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from fastapi import Depends, FastAPI, File, Form, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from functools import lru_cache, partial
 from dotenv import load_dotenv
 from pathlib import Path
@@ -19,6 +20,15 @@ from storage.models.supabase import SupabaseMetadataStore
 load_dotenv(Path(__file__).parent / ".env")
 
 app = FastAPI()
+
+# Dev-only, matching the local Next.js frontend in client/ — no auth exists yet (V1.5),
+# so this is scoped to known local origins rather than "*".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @lru_cache
 def get_build_artifact():

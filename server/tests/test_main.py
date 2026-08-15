@@ -3,6 +3,23 @@ from fastapi.testclient import TestClient
 from main import app, get_build_artifact
 
 
+def test_ingest_allows_cross_origin_requests_from_the_local_frontend():
+    app.dependency_overrides[get_build_artifact] = lambda: (lambda **_: {})
+    client = TestClient(app)
+
+    response = client.options(
+        "/ingest",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+
+
 def test_ingest_parses_the_upload_and_returns_build_artifact_result():
     captured = {}
 
