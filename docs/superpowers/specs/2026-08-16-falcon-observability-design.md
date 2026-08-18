@@ -165,14 +165,14 @@ monitored.predict(X)
 
 ```
 GET /models/{model_version_id}/telemetry?hours=24
-   → {model_version_id, hours, request_count, events_read,
+   → {model_version_id, hours, request_count, error_rate,
       latency_p50_ms, latency_p95_ms, latency_p99_ms,
-      error_rate, eval_reference}
+      truncated, eval_reference}
 ```
 
 `hours` is a float query param defaulting to **24** (a demo run and a next-day look both
-land inside it). `events_read` reports how many rows the summary actually consumed, so a
-window truncated by the read limit is visible rather than silently wrong.
+land inside it). `truncated` is `true` when the window hit the read limit, so a partial
+window is visible in the response rather than silently wrong.
 
 `eval_reference` is returned alongside the observed values so the two can be shown
 side by side — clearly labeled as feasibility-vs-production, never as pass/fail.
