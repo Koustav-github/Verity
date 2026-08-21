@@ -341,3 +341,63 @@ def test_archive_model_version_raises_when_it_affects_no_rows():
 
     with pytest.raises(ValueError):
         store.archive_model_version(model_version_id="mv_missing")
+
+
+MONITORING_CONFIG = {
+    "metrics": ["request_count", "latency_p50_ms", "latency_p95_ms", "latency_p99_ms", "error_rate"],
+    "eval_reference": {
+        "basis": "sandbox_feasibility",
+        "eval_run_id": "evr_1",
+        "latency_p95_ms": 0.234,
+        "quality": {"accuracy": 1.0},
+    },
+}
+
+
+def test_save_monitoring_config_inserts_a_row_and_returns_its_id():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    config_id = store.save_monitoring_config(
+        model_version_id="mv_abc", eval_run_id="evr_1", config=MONITORING_CONFIG
+    )
+
+    assert config_id.startswith("mcfg_")
+    assert fake_client.calls == [
+        (
+            "monitoring_config",
+            {
+                "id": config_id,
+                "model_version_id": "mv_abc",
+                "eval_run_id": "evr_1",
+                "metrics": MONITORING_CONFIG["metrics"],
+                "eval_reference": MONITORING_CONFIG["eval_reference"],
+            },
+        )
+    ]
+
+
+def test_find_monitoring_config_returns_the_row_for_that_version():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "monitoring_config": [
+                {"id": "mcfg_1", "model_version_id": "mv_abc", "metrics": ["error_rate"]},
+                {"id": "mcfg_2", "model_version_id": "mv_other", "metrics": []},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    config = store.find_monitoring_config(model_version_id="mv_abc")
+
+    assert config["id"] == "mcfg_1"
+    assert fake_client.calls == [
+        ("monitoring_config", "select", "*", [("model_version_id", "mv_abc")])
+    ]
+
+
+def test_find_monitoring_config_returns_none_when_the_version_is_not_monitored():
+    fake_client = FakeSupabaseClient(rows={"monitoring_config": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_monitoring_config(model_version_id="mv_nope") is None

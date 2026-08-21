@@ -137,3 +137,25 @@ class SupabaseMetadataStore:
             raise ValueError(
                 f"archive_model_version affected no rows for model_version_id={model_version_id!r}"
             )
+
+    def save_monitoring_config(self, *, model_version_id, eval_run_id, config):
+        config_id = f"mcfg_{uuid.uuid4().hex}"
+        self.client.table("monitoring_config").insert(
+            {
+                "id": config_id,
+                "model_version_id": model_version_id,
+                "eval_run_id": eval_run_id,
+                "metrics": config["metrics"],
+                "eval_reference": config["eval_reference"],
+            }
+        ).execute()
+        return config_id
+
+    def find_monitoring_config(self, *, model_version_id):
+        result = (
+            self.client.table("monitoring_config")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .execute()
+        )
+        return result.data[0] if result.data else None
