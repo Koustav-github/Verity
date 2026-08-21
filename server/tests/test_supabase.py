@@ -17,6 +17,9 @@ class FakeTable:
         self._verb = None
         self._filters = []
         self._select_cols = None
+        self._gte = None
+        self._order = None
+        self._limit = None
 
     def select(self, columns="*"):
         self._verb = "select"
@@ -37,11 +40,32 @@ class FakeTable:
         self._filters.append((column, value))
         return self
 
+    def gte(self, column, value):
+        self._gte = (column, value)
+        return self
+
+    def order(self, column, desc=False):
+        self._order = (column, desc)
+        return self
+
+    def limit(self, count):
+        self._limit = count
+        return self
+
     def _matching_rows(self):
-        return [
+        matches = [
             row for row in self.rows
             if all(row.get(col) == val for col, val in self._filters)
         ]
+        if self._gte is not None:
+            column, value = self._gte
+            matches = [row for row in matches if row.get(column) >= value]
+        if self._order is not None:
+            column, desc = self._order
+            matches = sorted(matches, key=lambda row: row.get(column), reverse=desc)
+        if self._limit is not None:
+            matches = matches[: self._limit]
+        return matches
 
     def execute(self):
         if self._verb == "select":
@@ -401,3 +425,61 @@ def test_find_monitoring_config_returns_none_when_the_version_is_not_monitored()
     store = SupabaseMetadataStore(client=fake_client)
 
     assert store.find_monitoring_config(model_version_id="mv_nope") is None
+
+
+def test_save_telemetry_events_inserts_the_whole_batch_at_once():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+    events = [
+        {"model_version_id": "mv_1", "occurred_at": "2026-08-16T10:00:00+00:00",
+         "latency_ms": 1.5, "status": "ok", "error_type": None},
+        {"model_version_id": "mv_1", "occurred_at": "2026-08-16T10:00:01+00:00",
+         "latency_ms": 2.5, "status": "error", "error_type": "ValueError"},
+    ]
+
+    written = store.save_telemetry_events(events=events)
+
+    assert written == 2
+    assert fake_client.calls == [("telemetry_event", events)]
+
+
+def test_save_telemetry_events_does_nothing_for_an_empty_batch():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.save_telemetry_events(events=[]) == 0
+    assert fake_client.calls == []
+
+
+def test_find_telemetry_events_returns_only_this_version_within_the_window():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "telemetry_event": [
+                {"id": 1, "model_version_id": "mv_1", "occurred_at": "2026-08-16T10:00:00+00:00"},
+                {"id": 2, "model_version_id": "mv_1", "occurred_at": "2026-08-15T10:00:00+00:00"},
+                {"id": 3, "model_version_id": "mv_other", "occurred_at": "2026-08-16T10:00:00+00:00"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    events = store.find_telemetry_events(
+        model_version_id="mv_1", since="2026-08-16T00:00:00+00:00"
+    )
+
+    assert [e["id"] for e in events] == [1]
+
+
+def test_find_telemetry_events_honours_the_limit():
+    rows = [
+        {"id": n, "model_version_id": "mv_1", "occurred_at": f"2026-08-16T10:00:0{n}+00:00"}
+        for n in range(5)
+    ]
+    fake_client = FakeSupabaseClient(rows={"telemetry_event": rows})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    events = store.find_telemetry_events(
+        model_version_id="mv_1", since="2026-08-16T00:00:00+00:00", limit=2
+    )
+
+    assert len(events) == 2

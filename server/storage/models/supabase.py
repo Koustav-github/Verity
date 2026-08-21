@@ -159,3 +159,27 @@ class SupabaseMetadataStore:
             .execute()
         )
         return result.data[0] if result.data else None
+
+    def save_telemetry_events(self, *, events):
+        """Batch insert. The SDK batches on its side, so this never sees one row at a time.
+
+        Unlike the registry mutations, a zero-row result is not checked for: this is an
+        insert, not an update — PostgREST raises on a failed insert (e.g. an FK violation
+        for an unknown model_version_id) rather than silently affecting nothing.
+        """
+        if not events:
+            return 0
+        self.client.table("telemetry_event").insert(events).execute()
+        return len(events)
+
+    def find_telemetry_events(self, *, model_version_id, since, limit=10_000):
+        result = (
+            self.client.table("telemetry_event")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .gte("occurred_at", since)
+            .order("occurred_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
