@@ -513,7 +513,7 @@ Append to `server/storage/models/supabase.py`:
 ```bash
 cd server && uv run pytest tests/test_supabase.py -v
 ```
-Expected: all `PASS` — 21 tests (14 pre-existing + 3 from Task 2 + 4 here).
+Expected: all `PASS` — **25** tests (18 pre-existing + 3 from Task 2 + 4 here).
 
 - [ ] **Step 6: Commit**
 
