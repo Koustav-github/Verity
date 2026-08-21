@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from functools import lru_cache, partial
 from dotenv import load_dotenv
 from pathlib import Path
+from pydantic import BaseModel, ConfigDict
 from typing import Callable
 
 # agents/ lives one directory up (repo root), alongside server/ and verity/ —
@@ -39,6 +40,28 @@ def get_build_artifact():
     metadata_store = SupabaseMetadataStore()
     return partial(build_artifact, blob_store=blob_store, metadata_store=metadata_store)
 
+@lru_cache
+def get_metadata_store():
+    return SupabaseMetadataStore()
+
+
+class TelemetryEvent(BaseModel):
+    # `model_version_id` collides with pydantic v2's protected `model_` namespace, which
+    # would emit a warning and can shadow BaseModel internals. Opting out of the
+    # protection is correct here: the field name is fixed by the Schemas.md column name.
+    model_config = ConfigDict(protected_namespaces=())
+
+    model_version_id: str
+    occurred_at: str
+    status: str
+    latency_ms: float | None = None
+    error_type: str | None = None
+
+
+class TelemetryBatch(BaseModel):
+    events: list[TelemetryEvent]
+
+
 @app.post("/ingest")
 async def ingest(
     artifact: UploadFile,
@@ -63,3 +86,13 @@ async def ingest(
         fixture_payload=fixture_payload,
         fixture_descriptor=json.loads(fixture_descriptor) if fixture_descriptor else None,
     )
+
+@app.post("/telemetry")
+async def ingest_telemetry(
+    batch: TelemetryBatch,
+    metadata_store=Depends(get_metadata_store),
+):
+    written = metadata_store.save_telemetry_events(
+        events=[event.model_dump() for event in batch.events]
+    )
+    return {"written": written}

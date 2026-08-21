@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from main import app, get_build_artifact
+from main import app, get_build_artifact, get_metadata_store
 
 
 def test_ingest_allows_cross_origin_requests_from_the_local_frontend():
@@ -120,3 +120,59 @@ def test_ingest_forwards_an_uploaded_fixture_and_its_descriptor():
         "kind": "labeled_holdout",
         "sha256": "def456",
     }
+
+
+def test_telemetry_ingestion_stores_the_whole_batch():
+    captured = {}
+
+    class FakeStore:
+        def save_telemetry_events(self, *, events):
+            captured["events"] = events
+            return len(events)
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.post(
+        "/telemetry",
+        json={
+            "events": [
+                {"model_version_id": "mv_1", "occurred_at": "2026-08-16T10:00:00+00:00",
+                 "latency_ms": 1.5, "status": "ok"},
+                {"model_version_id": "mv_1", "occurred_at": "2026-08-16T10:00:01+00:00",
+                 "latency_ms": 9.0, "status": "error", "error_type": "ValueError"},
+            ]
+        },
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"written": 2}
+    assert captured["events"][1]["error_type"] == "ValueError"
+
+
+def test_telemetry_ingestion_rejects_an_event_missing_a_required_field():
+    app.dependency_overrides[get_metadata_store] = lambda: None
+    client = TestClient(app)
+
+    response = client.post("/telemetry", json={"events": [{"latency_ms": 1.0}]})
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_telemetry_ingestion_accepts_an_empty_batch():
+    class FakeStore:
+        def save_telemetry_events(self, *, events):
+            return 0
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.post("/telemetry", json={"events": []})
+
+    app.dependency_overrides.clear()
+
+    assert response.json() == {"written": 0}
