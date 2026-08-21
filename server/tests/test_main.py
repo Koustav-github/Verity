@@ -229,3 +229,78 @@ def test_telemetry_ingestion_rejects_a_batch_over_the_size_limit():
     app.dependency_overrides.clear()
 
     assert response.status_code == 422
+
+
+def test_reading_telemetry_summarises_the_window_alongside_the_eval_reference():
+    captured = {}
+
+    class FakeStore:
+        def find_telemetry_events(self, *, model_version_id, since, limit):
+            captured["model_version_id"] = model_version_id
+            captured["since"] = since
+            captured["limit"] = limit
+            return [
+                {"latency_ms": 10.0, "status": "ok"},
+                {"latency_ms": 20.0, "status": "error"},
+            ]
+
+        def find_monitoring_config(self, *, model_version_id):
+            return {"eval_reference": {"basis": "sandbox_feasibility", "latency_p95_ms": 0.2}}
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/models/mv_1/telemetry")
+
+    app.dependency_overrides.clear()
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["model_version_id"] == "mv_1"
+    assert body["request_count"] == 2
+    assert body["error_rate"] == 0.5
+    assert body["eval_reference"]["basis"] == "sandbox_feasibility"
+    assert captured["model_version_id"] == "mv_1"
+
+
+def test_reading_telemetry_defaults_to_a_24_hour_window_and_accepts_an_override():
+    seen = {}
+
+    class FakeStore:
+        def find_telemetry_events(self, *, model_version_id, since, limit):
+            seen["since"] = since
+            return []
+
+        def find_monitoring_config(self, *, model_version_id):
+            return None
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    default_response = client.get("/models/mv_1/telemetry")
+    assert default_response.json()["hours"] == 24.0
+
+    override_response = client.get("/models/mv_1/telemetry?hours=1")
+    assert override_response.json()["hours"] == 1.0
+
+    app.dependency_overrides.clear()
+
+
+def test_reading_telemetry_for_an_unmonitored_version_still_returns_a_summary():
+    class FakeStore:
+        def find_telemetry_events(self, *, model_version_id, since, limit):
+            return []
+
+        def find_monitoring_config(self, *, model_version_id):
+            return None
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/models/mv_unknown/telemetry")
+
+    app.dependency_overrides.clear()
+
+    body = response.json()
+    assert body["request_count"] == 0
+    assert body["eval_reference"] is None

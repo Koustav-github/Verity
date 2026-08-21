@@ -1,7 +1,7 @@
 import json
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from functools import lru_cache, partial
@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from orchestrator import build_artifact
 from storage.models.s3 import S3BlobStore
 from storage.models.supabase import SupabaseMetadataStore
+from telemetry import summarize
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -31,6 +32,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Relational storage at V1 (Schemas.md moves telemetry to the analytics store at V3), so
+# the read path caps what it pulls. `truncated` in the response says when this bit.
+TELEMETRY_READ_LIMIT = 10_000
 
 @lru_cache
 def get_build_artifact():
@@ -101,3 +106,21 @@ async def ingest_telemetry(
         events=[event.model_dump(mode="json") for event in batch.events]
     )
     return {"written": written}
+
+@app.get("/models/{model_version_id}/telemetry")
+async def read_telemetry(
+    model_version_id: str,
+    hours: float = 24.0,
+    metadata_store=Depends(get_metadata_store),
+):
+    since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    events = metadata_store.find_telemetry_events(
+        model_version_id=model_version_id, since=since, limit=TELEMETRY_READ_LIMIT
+    )
+    config = metadata_store.find_monitoring_config(model_version_id=model_version_id)
+    summary = summarize(
+        events=events,
+        eval_reference=(config or {}).get("eval_reference"),
+        limit=TELEMETRY_READ_LIMIT,
+    )
+    return {"model_version_id": model_version_id, "hours": hours, **summary}
