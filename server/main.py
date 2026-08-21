@@ -1,13 +1,14 @@
 import json
 import os
 import sys
+from datetime import datetime
 from fastapi import Depends, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from functools import lru_cache, partial
 from dotenv import load_dotenv
 from pathlib import Path
-from pydantic import BaseModel, ConfigDict
-from typing import Callable
+from pydantic import BaseModel, ConfigDict, Field
+from typing import Callable, Literal
 
 # agents/ lives one directory up (repo root), alongside server/ and verity/ —
 # needed at runtime, not just under pytest (whose pythonpath config doesn't
@@ -52,14 +53,16 @@ class TelemetryEvent(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
     model_version_id: str
-    occurred_at: str
-    status: str
+    occurred_at: datetime
+    status: Literal["ok", "error", "timeout"]
     latency_ms: float | None = None
     error_type: str | None = None
 
 
 class TelemetryBatch(BaseModel):
-    events: list[TelemetryEvent]
+    # The SDK batches at 100 events per request; 1000 gives 10x headroom while bounding
+    # the blast radius of a single request (memory exhaustion, an enormous DB insert).
+    events: list[TelemetryEvent] = Field(default=..., max_length=1000)
 
 
 @app.post("/ingest")
@@ -93,6 +96,8 @@ async def ingest_telemetry(
     metadata_store=Depends(get_metadata_store),
 ):
     written = metadata_store.save_telemetry_events(
-        events=[event.model_dump() for event in batch.events]
+        # mode="json" so `occurred_at` (a datetime) serializes back to an ISO string —
+        # the Supabase client can't JSON-serialize a raw datetime object.
+        events=[event.model_dump(mode="json") for event in batch.events]
     )
     return {"written": written}

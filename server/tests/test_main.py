@@ -176,3 +176,56 @@ def test_telemetry_ingestion_accepts_an_empty_batch():
     app.dependency_overrides.clear()
 
     assert response.json() == {"written": 0}
+
+
+def test_telemetry_ingestion_rejects_an_event_with_an_invalid_status():
+    app.dependency_overrides[get_metadata_store] = lambda: None
+    client = TestClient(app)
+
+    response = client.post(
+        "/telemetry",
+        json={
+            "events": [
+                {"model_version_id": "mv_1", "occurred_at": "2026-08-16T10:00:00+00:00",
+                 "status": "succeeded"},
+            ]
+        },
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_telemetry_ingestion_rejects_an_event_with_a_malformed_timestamp():
+    app.dependency_overrides[get_metadata_store] = lambda: None
+    client = TestClient(app)
+
+    response = client.post(
+        "/telemetry",
+        json={
+            "events": [
+                {"model_version_id": "mv_1", "occurred_at": "not-a-timestamp",
+                 "status": "ok"},
+            ]
+        },
+    )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_telemetry_ingestion_rejects_a_batch_over_the_size_limit():
+    app.dependency_overrides[get_metadata_store] = lambda: None
+    client = TestClient(app)
+
+    events = [
+        {"model_version_id": "mv_1", "occurred_at": "2026-08-16T10:00:00+00:00", "status": "ok"}
+        for _ in range(1001)
+    ]
+    response = client.post("/telemetry", json={"events": events})
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 422
