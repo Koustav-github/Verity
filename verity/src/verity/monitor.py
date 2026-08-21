@@ -1,4 +1,8 @@
+import atexit
+import queue
+import threading
 import time
+from datetime import datetime, timezone
 
 
 class MonitoredModel:
@@ -53,3 +57,114 @@ class MonitoredModel:
             # A telemetry failure is never allowed to surface into the caller's
             # inference path — that is the whole contract of this wrapper.
             pass
+
+    def flush(self):
+        """Drain buffered telemetry now. Called automatically at process exit."""
+        self._reporter.flush()
+
+
+class _HttpTransport:
+    def __init__(self, endpoint, client=None):
+        self._endpoint = endpoint
+        self._client = client
+
+    def send(self, events):
+        if self._client is None:
+            import httpx
+
+            self._client = httpx.Client(timeout=10.0)
+        self._client.post(f"{self._endpoint}/telemetry", json={"events": events})
+
+
+class TelemetryReporter:
+    """Buffers telemetry and ships it in batches from a background thread.
+
+    Nothing here is allowed to block or break the caller: enqueue is non-blocking and
+    drops on overflow, sending happens off the predict path, and transport failures are
+    swallowed. Losing telemetry is always preferable to degrading the customer's serving.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_version_id,
+        endpoint,
+        transport=None,
+        maxsize=10_000,
+        batch_size=100,
+        flush_interval=5.0,
+    ):
+        self._model_version_id = model_version_id
+        self._transport = transport or _HttpTransport(endpoint)
+        self._queue = queue.Queue(maxsize=maxsize)
+        self._batch_size = batch_size
+        self._flush_interval = flush_interval
+        self.dropped = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        atexit.register(self.flush)
+
+    def record(self, *, latency_ms, status, error_type):
+        try:
+            self._queue.put_nowait(
+                {
+                    "model_version_id": self._model_version_id,
+                    "occurred_at": datetime.now(timezone.utc).isoformat(),
+                    "latency_ms": latency_ms,
+                    "status": status,
+                    "error_type": error_type,
+                }
+            )
+        except queue.Full:
+            # Dropping is the correct failure mode: blocking here would add the
+            # telemetry backlog to the customer's inference latency.
+            self.dropped += 1
+
+    def flush(self):
+        while True:
+            batch = self._next_batch()
+            if not batch:
+                return
+            self._send(batch)
+
+    def _next_batch(self):
+        batch = []
+        while len(batch) < self._batch_size:
+            try:
+                batch.append(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        return batch
+
+    def _send(self, batch):
+        try:
+            self._transport.send(batch)
+        except Exception:
+            pass
+
+    def _loop(self):
+        while not self._stop.wait(self._flush_interval):
+            self.flush()
+
+
+def monitor(
+    model,
+    *,
+    model_version_id,
+    endpoint="http://localhost:8000",
+    transport=None,
+    flush_interval=5.0,
+):
+    """Wrap a model so its predictions are reported to Verity.
+
+    `model_version_id` is the id returned by assemble(). Upload and serving usually happen
+    in different processes, so it is passed explicitly rather than remembered.
+    """
+    reporter = TelemetryReporter(
+        model_version_id=model_version_id,
+        endpoint=endpoint,
+        transport=transport,
+        flush_interval=flush_interval,
+    )
+    return MonitoredModel(model, reporter=reporter)
