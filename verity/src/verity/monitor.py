@@ -62,6 +62,10 @@ class MonitoredModel:
         """Drain buffered telemetry now. Called automatically at process exit."""
         self._reporter.flush()
 
+    def stop(self):
+        """Stop reporting and release the background thread."""
+        self._reporter.stop()
+
 
 class _HttpTransport:
     def __init__(self, endpoint, client=None):
@@ -100,10 +104,11 @@ class TelemetryReporter:
         self._batch_size = batch_size
         self._flush_interval = flush_interval
         self.dropped = 0
+        self._counter_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        atexit.register(self.flush)
+        atexit.register(self._flush_on_exit)
 
     def record(self, *, latency_ms, status, error_type):
         try:
@@ -119,14 +124,37 @@ class TelemetryReporter:
         except queue.Full:
             # Dropping is the correct failure mode: blocking here would add the
             # telemetry backlog to the customer's inference latency.
-            self.dropped += 1
+            with self._counter_lock:
+                self.dropped += 1
 
-    def flush(self):
+    def stop(self, *, timeout=5.0):
+        """Stop the background thread and release the atexit hook.
+
+        Safe to call more than once. Drains what is already queued before returning, so
+        stopping does not silently discard buffered telemetry.
+        """
+        self._stop.set()
+        self._thread.join(timeout=timeout)
+        try:
+            atexit.unregister(self._flush_on_exit)
+        except Exception:
+            pass
+        self.flush()
+
+    def flush(self, *, deadline_seconds=None):
+        started = time.monotonic()
         while True:
             batch = self._next_batch()
             if not batch:
                 return
             self._send(batch)
+            if deadline_seconds is not None and (time.monotonic() - started) >= deadline_seconds:
+                # Shutdown path: losing the tail of telemetry is strictly better than
+                # holding the process open while an unreachable endpoint times out.
+                return
+
+    def _flush_on_exit(self):
+        self.flush(deadline_seconds=5.0)
 
     def _next_batch(self):
         batch = []
