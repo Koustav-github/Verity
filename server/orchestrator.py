@@ -16,6 +16,7 @@ def build_artifact(
     evaluate_fn=None,
     find_existing_fn=None,
     register_fn=None,
+    configure_fn=None,
     fixture_payload=None,
     fixture_descriptor=None,
 ):
@@ -23,6 +24,7 @@ def build_artifact(
     evaluate_fn = evaluate_fn or _default_evaluate
     find_existing_fn = find_existing_fn or _default_find_existing
     register_fn = register_fn or _default_register
+    configure_fn = configure_fn or _default_configure
 
     # The client claims this digest; never trust it as-is. It's used as the S3 key, the
     # artifact_sha256 column, and (via dedup) the identity that decides which existing
@@ -52,6 +54,7 @@ def build_artifact(
                 "eval_run": None,
                 "deduplicated": True,
                 "model_id": existing["model_id"],
+                "monitoring_config": None,
             }
 
     artifact_uri = blob_store.put(sha256, payload)
@@ -103,6 +106,16 @@ def build_artifact(
         metadata_store=metadata_store,
     )
 
+    monitoring_config = None
+    if registration["status"] == "production":
+        monitoring_config = _configure_monitoring(
+            configure_fn=configure_fn,
+            model_version_id=model_version_id,
+            eval_run_id=eval_run_id,
+            eval_run=eval_record,
+            metadata_store=metadata_store,
+        )
+
     return {
         "model_version_id": model_version_id,
         "artifact_uri": artifact_uri,
@@ -112,6 +125,7 @@ def build_artifact(
         "model_id": registration["model_id"],
         "deduplicated": False,
         "archived_model_version_id": registration["archived_model_version_id"],
+        "monitoring_config": monitoring_config,
     }
 
 
@@ -137,6 +151,28 @@ def _evaluate(
     )
 
 
+def _configure_monitoring(
+    *, configure_fn, model_version_id, eval_run_id, eval_run, metadata_store
+):
+    """Switch monitoring on, but never at the cost of the promotion that just succeeded.
+
+    Deliberate asymmetry from Fury: Fury raising is correct, because if Fury fails the
+    promotion did not happen and a 500 is the truth. Falcon runs AFTER the version is
+    already `production` — a config failure here must not 500 a request whose promotion
+    genuinely succeeded. The caller gets a null config, which is visible rather than
+    fabricated, and monitoring can be configured later.
+    """
+    try:
+        return configure_fn(
+            model_version_id=model_version_id,
+            eval_run_id=eval_run_id,
+            eval_run=eval_run,
+            metadata_store=metadata_store,
+        )
+    except Exception:
+        return None
+
+
 def _default_identify(model):
     from agents.brain1.hawkeye.identify import identify
 
@@ -160,3 +196,9 @@ def _default_register(**kwargs):
     from agents.brain3.fury.registry import register
 
     return register(**kwargs)
+
+
+def _default_configure(**kwargs):
+    from agents.brain4.falcon.monitor import configure
+
+    return configure(**kwargs)

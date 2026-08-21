@@ -27,6 +27,7 @@ class FakeMetadataStore:
         self.manifests = {}
         self.eval_runs = {}
         self.status_updates = []
+        self.monitoring_configs = {}
 
     def save_model_version(self, *, sha256, artifact_uri, user_id, args, status):
         self.model_versions[sha256] = {
@@ -47,6 +48,10 @@ class FakeMetadataStore:
 
     def update_model_version_status(self, *, model_version_id, status):
         self.status_updates.append((model_version_id, status))
+
+    def save_monitoring_config(self, *, model_version_id, eval_run_id, config):
+        self.monitoring_configs[model_version_id] = config
+        return "mcfg_fake"
 
 
 def fake_identify(model):
@@ -110,6 +115,7 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
         "model_id": "mdl_123",
         "deduplicated": False,
         "archived_model_version_id": None,
+        "monitoring_config": None,
     }
 
 
@@ -228,6 +234,7 @@ def test_an_exact_repeat_of_name_and_hash_short_circuits_before_anything_else_ru
         "eval_run": None,
         "deduplicated": True,
         "model_id": "mdl_existing",
+        "monitoring_config": None,
     }
 
 
@@ -449,3 +456,108 @@ def test_the_final_response_surfaces_which_version_was_archived_by_a_promotion()
     )
 
     assert result["archived_model_version_id"] == "mv_old"
+
+
+def fake_configure(**kwargs):
+    return {"id": "mcfg_1", "metrics": ["error_rate"], "eval_reference": {"basis": "sandbox_feasibility"}}
+
+
+def test_a_promoted_version_gets_monitoring_configured():
+    seen = {}
+
+    def recording_configure(**kwargs):
+        seen.update(kwargs)
+        return fake_configure()
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256=FAKE_MODEL_SHA256,
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
+        configure_fn=recording_configure,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=passing_eval,
+    )
+
+    assert result["monitoring_config"]["id"] == "mcfg_1"
+    assert seen["model_version_id"] == "mv_123"
+    assert seen["eval_run_id"] == "evr_789"
+
+
+def test_a_version_that_was_not_promoted_gets_no_monitoring_config():
+    def must_not_run(**_):
+        raise AssertionError("configure_fn must not run for a non-production version")
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256=FAKE_MODEL_SHA256,
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
+        configure_fn=must_not_run,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=lambda **_: {"verdict": "fail"},
+    )
+
+    assert result["monitoring_config"] is None
+    assert result["status"] == "staging_failed"
+
+
+def test_a_falcon_failure_does_not_lose_a_promotion_that_already_succeeded():
+    def exploding_configure(**_):
+        raise RuntimeError("supabase is down")
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256=FAKE_MODEL_SHA256,
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
+        configure_fn=exploding_configure,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "def456"},
+        evaluate_fn=passing_eval,
+    )
+
+    assert result["status"] == "production"
+    assert result["monitoring_config"] is None
+
+
+def test_an_upload_with_no_fixture_is_never_monitored():
+    def must_not_run(**_):
+        raise AssertionError("configure_fn must not run without an eval")
+
+    result = build_artifact(
+        payload=cloudpickle.dumps({"kind": "fake-model"}),
+        sha256=FAKE_MODEL_SHA256,
+        user_id="u_1",
+        name="fake-model",
+        args={},
+        blob_store=FakeBlobStore(),
+        metadata_store=FakeMetadataStore(),
+        identify_fn=fake_identify,
+        find_existing_fn=no_existing,
+        register_fn=fake_register,
+        configure_fn=must_not_run,
+    )
+
+    assert result["monitoring_config"] is None
+    assert result["status"] == "pending"
