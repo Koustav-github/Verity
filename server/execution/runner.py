@@ -60,12 +60,16 @@ def _memory_and_cpu():
     }
 
 
-def run_job(job):
-    # Unpickling customer bytes IS the job here, and it is deliberate: this process is
-    # the containment boundary. It runs with a scrubbed environment (no store, blob, or
-    # LLM credentials), holds no network clients, and is killed at a timeout by the
-    # parent. Never call run_job() in-process — that would remove the only protection.
-    model = cloudpickle.loads(job["model_bytes"])
+def _to_list(value):
+    """numpy arrays and scalars -> plain JSON-safe Python."""
+    if value is None:
+        return None
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return list(value)
+
+
+def _run_predict(model, job):
     X = job["X"]
 
     batch_started = time.perf_counter()
@@ -93,6 +97,42 @@ def run_job(job):
         "y_proba": y_proba.tolist() if hasattr(y_proba, "tolist") else y_proba,
         "resource": resource,
     }
+
+
+def _run_introspect(model, job):
+    """Read the fitted estimator's surface. No prediction, no instrumentation.
+
+    Everything here is measured off the object rather than inferred, which is why it
+    belongs beside identification rather than in a language model's prompt.
+    """
+    n_features = getattr(model, "n_features_in_", None)
+    return {
+        "estimator_class": type(model).__name__,
+        "n_features": int(n_features) if n_features is not None else None,
+        # Only set when the estimator was fit on a DataFrame. None is a real answer,
+        # not a failure: it means the served API must be positional.
+        "feature_names": _to_list(getattr(model, "feature_names_in_", None)),
+        "classes": _to_list(getattr(model, "classes_", None)),
+        "has_predict_proba": hasattr(model, "predict_proba"),
+    }
+
+
+# Dict dispatch rather than a branch, matching every other extension point in the
+# pipeline: a third mode is a new entry, not a new `elif`.
+_MODES = {
+    "predict": _run_predict,
+    "introspect": _run_introspect,
+}
+
+
+def run_job(job):
+    # Unpickling customer bytes IS the job here, and it is deliberate: this process is
+    # the containment boundary. It runs with a scrubbed environment (no store, blob, or
+    # LLM credentials), holds no network clients, and is killed at a timeout by the
+    # parent. Never call run_job() in-process — that would remove the only protection.
+    model = cloudpickle.loads(job["model_bytes"])
+    # Default keeps every existing caller working unchanged.
+    return _MODES[job.get("mode", "predict")](model, job)
 
 
 def main():

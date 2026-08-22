@@ -1,8 +1,9 @@
 import httpx
 
+from verity.environment import capture
 from verity.fixture import labeled_holdout
 from verity.serialize import serialize
-from verity.transport import upload
+from verity.transport import DEFAULT_TIMEOUT_SECONDS, upload
 
 
 def assemble(
@@ -11,6 +12,7 @@ def assemble(
     name: str,
     endpoint: str = "http://localhost:8000",
     client: httpx.Client | None = None,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
     X_test=None,
     y_test=None,
     fixture: tuple | None = None,
@@ -38,6 +40,8 @@ def assemble(
         client=client,
         fixture_payload=fixture_payload,
         fixture_descriptor=fixture_descriptor,
+        environment=capture(),
+        timeout=timeout,
     )
 
 

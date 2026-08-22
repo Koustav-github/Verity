@@ -1,8 +1,9 @@
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
-from fastapi import Depends, FastAPI, File, Form, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from functools import lru_cache, partial
 from dotenv import load_dotenv
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from orchestrator import build_artifact
 from storage.models.s3 import S3BlobStore
 from storage.models.supabase import SupabaseMetadataStore
+from serving.sink import TelemetrySink
 from telemetry import summarize
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -51,6 +53,20 @@ def get_metadata_store():
     return SupabaseMetadataStore()
 
 
+@lru_cache
+def get_telemetry_sink():
+    sink = TelemetrySink(metadata_store=get_metadata_store())
+    sink.start()
+    return sink
+
+
+@lru_cache
+def get_predict_transport():
+    import httpx
+
+    return httpx.Client(timeout=30.0)
+
+
 class TelemetryEvent(BaseModel):
     # `model_version_id` collides with pydantic v2's protected `model_` namespace, which
     # would emit a warning and can shadow BaseModel internals. Opting out of the
@@ -79,6 +95,7 @@ async def ingest(
     args: str = Form("{}"),
     fixture: UploadFile | None = File(None),
     fixture_descriptor: str | None = Form(None),
+    environment: str | None = Form(None),
     build_artifact_fn: Callable = Depends(get_build_artifact),
 ):
     payload = await artifact.read()
@@ -93,6 +110,9 @@ async def ingest(
         args=json.loads(args),
         fixture_payload=fixture_payload,
         fixture_descriptor=json.loads(fixture_descriptor) if fixture_descriptor else None,
+        # Absent for uploads from an SDK older than api-fication. The image then falls
+        # back to a default Python and an empty pin set, which is worse but not fatal.
+        environment=json.loads(environment) if environment else None,
     )
 
 @app.post("/telemetry")
@@ -124,3 +144,68 @@ async def read_telemetry(
         limit=TELEMETRY_READ_LIMIT,
     )
     return {"model_version_id": model_version_id, "hours": hours, **summary}
+
+
+@app.post("/users/{user_id}/models/{name}/predict")
+async def predict(
+    user_id: str,
+    name: str,
+    body: dict,
+    metadata_store=Depends(get_metadata_store),
+    sink=Depends(get_telemetry_sink),
+    transport=Depends(get_predict_transport),
+):
+    # user_id is in the path because model names are unique per user, not globally
+    # (Schemas.md: UNIQUE (user_id, name)), and no auth exists yet to supply it
+    # implicitly. At V1.5 the API key identifies the org and this collapses to
+    # /models/{name}/predict — the extra segment is temporary and load-bearing.
+    version = metadata_store.find_production_version_by_name(user_id=user_id, name=name)
+    if version is None:
+        raise HTTPException(
+            404, f"no production version of {name!r} for user {user_id!r}"
+        )
+
+    deployment = metadata_store.find_live_deployment(model_version_id=version["id"])
+    if deployment is None:
+        # Deliberately distinct from the 404 above: "promoted but not deployed" and
+        # "no such model" are opposite problems with opposite fixes, and one
+        # undifferentiated 404 would conflate them.
+        raise HTTPException(
+            404,
+            f"{name!r} is promoted but not deployed — check its deployment row for the reason",
+        )
+
+    started = time.perf_counter()
+    try:
+        response = transport.post(
+            f"{deployment['endpoint_url']}/predict", json=body, timeout=30.0
+        )
+        prediction = response.json()
+    except Exception as exc:  # noqa: BLE001 - the container is out of our process
+        _record(sink, version["id"], started, body, None, exc)
+        raise HTTPException(
+            502, f"model container did not answer: {type(exc).__name__}"
+        )
+
+    _record(sink, version["id"], started, body, prediction, None)
+    return prediction
+
+
+def _record(sink, model_version_id, started, inputs, prediction, exc):
+    """Telemetry can never be the reason a prediction fails — Falcon's governing rule,
+    applied to the proxy. This is also the first place Verity sees production *inputs*,
+    which is what makes drift detection possible at all."""
+    try:
+        sink.record(
+            {
+                "model_version_id": model_version_id,
+                "occurred_at": datetime.now(timezone.utc).isoformat(),
+                "status": "ok" if exc is None else "error",
+                "latency_ms": (time.perf_counter() - started) * 1000,
+                "inputs": inputs,
+                "prediction": prediction,
+                "error_type": type(exc).__name__ if exc is not None else None,
+            }
+        )
+    except Exception:  # noqa: BLE001
+        pass

@@ -483,3 +483,119 @@ def test_find_telemetry_events_honours_the_limit():
     )
 
     assert len(events) == 2
+
+
+def test_save_deployment_inserts_a_building_row_with_a_prefixed_id():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    deployment_id = store.save_deployment(
+        model_version_id="mv_1", image_tag="verity-model:mv_1", status="building"
+    )
+
+    assert deployment_id.startswith("dep_")
+    assert fake_client.calls == [
+        (
+            "deployment",
+            {
+                "id": deployment_id,
+                "model_version_id": "mv_1",
+                "image_tag": "verity-model:mv_1",
+                "status": "building",
+            },
+        )
+    ]
+
+
+def test_update_deployment_writes_only_the_fields_it_was_given():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.update_deployment(
+        deployment_id="dep_1",
+        status="live",
+        host_port=49312,
+        endpoint_url="http://localhost:49312",
+    )
+
+    assert fake_client.calls == [
+        (
+            "deployment",
+            "update",
+            {"status": "live", "host_port": 49312, "endpoint_url": "http://localhost:49312"},
+            [("id", "dep_1")],
+        )
+    ]
+
+
+def test_find_live_deployment_returns_none_when_the_version_never_deployed():
+    store = SupabaseMetadataStore(client=FakeSupabaseClient())
+
+    assert store.find_live_deployment(model_version_id="mv_1") is None
+
+
+def test_find_live_deployment_ignores_failed_and_stopped_rows_for_the_same_version():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "deployment": [
+                {"id": "dep_old", "model_version_id": "mv_1", "status": "stopped"},
+                {"id": "dep_bad", "model_version_id": "mv_1", "status": "failed"},
+                {"id": "dep_now", "model_version_id": "mv_1", "status": "live"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_live_deployment(model_version_id="mv_1")["id"] == "dep_now"
+
+
+def test_save_manifest_persists_the_serving_columns_when_present():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.save_manifest(
+        model_version_id="mv_1",
+        manifest={
+            "framework": "sklearn",
+            "io_schema": {"n_features": 2},
+            "environment": {"python_version": "3.12", "packages": {}},
+        },
+    )
+
+    inserted = fake_client.calls[0][1]
+    assert inserted["io_schema"] == {"n_features": 2}
+    assert inserted["environment"] == {"python_version": "3.12", "packages": {}}
+
+
+def test_save_manifest_omits_the_serving_columns_for_a_manifest_without_them():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.save_manifest(model_version_id="mv_1", manifest={"framework": "sklearn"})
+
+    inserted = fake_client.calls[0][1]
+    # Not null-filled: a pre-api-fication manifest must stay distinguishable from one
+    # whose introspection ran and failed.
+    assert "io_schema" not in inserted
+    assert "environment" not in inserted
+
+
+def test_find_production_version_by_name_returns_none_for_an_unknown_model():
+    store = SupabaseMetadataStore(client=FakeSupabaseClient())
+
+    assert store.find_production_version_by_name(user_id="u_1", name="nope") is None
+
+
+def test_find_production_version_by_name_resolves_the_model_then_its_live_version():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "model": [{"id": "mdl_1", "user_id": "u_1", "name": "fraud"}],
+            "model_version": [
+                {"id": "mv_1", "model_id": "mdl_1", "status": "archived"},
+                {"id": "mv_2", "model_id": "mdl_1", "status": "production"},
+            ],
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_production_version_by_name(user_id="u_1", name="fraud")["id"] == "mv_2"

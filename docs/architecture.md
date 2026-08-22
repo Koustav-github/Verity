@@ -1,12 +1,9 @@
 # Verity — Full Architecture & Workflow
 
 > Source analysed: `e:\Projects\Verity`, branch `main`. All file references are relative
-> to the repo root. Server test suite: 132 passing. SDK test suite: 38 passing.
+> to the repo root. Server test suite: 207 passing. SDK test suite: 45 passing.
 >
-> This describes all four V1 agents as built. **api-fication** — Verity serving a promoted
-> version behind a generated endpoint — is designed but not yet built, so it appears below
-> only where an existing decision was made in anticipation of it. See
-> [`README.md`](../README.md#current-status) for that design's current state.
+> This describes all four V1 agents and container serving, all as built.
 
 ---
 
@@ -28,8 +25,11 @@ lifting its reference numbers straight out of the eval run that justified the pr
 agent is a pure function with every collaborator injected and a lazy real default, so the
 whole chain is testable with hand-written fakes and zero mocking.
 
-Two routes sit outside that chain: `POST /telemetry` accepts batched live traffic from
-`verity.monitor()`, and `GET /models/{id}/telemetry` summarises it.
+A promotion additionally builds and starts a container for the version (§9), which Verity
+then fronts: `POST /users/{id}/models/{name}/predict` proxies to it and records every request.
+Two further routes sit outside the chain entirely — `POST /telemetry` accepts batched live
+traffic from `verity.monitor()` when the customer hosts the model themselves, and
+`GET /models/{id}/telemetry` summarises whichever source produced it.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -147,7 +147,7 @@ This exists because `sha256` decides three separate things downstream — the S3
 including its `status`*. A client that could claim someone else's digest while sending
 different bytes would be handed that other version's record, `production` status
 included, without the real bytes ever touching storage or evaluation. Added after a final
-whole-branch review caught it as a live gap — see §10.
+whole-branch review caught it as a live gap — see §11.
 
 ### 3.3 Dedup short-circuit — conditional on whether there's new evidence
 
@@ -164,7 +164,7 @@ The `if fixture_payload is None` guard is load-bearing, not incidental. Dedup on
 when there is *nothing new to evaluate* — a fixture-bearing upload always runs the full
 pipeline, even against an identical, already-registered hash+name, because otherwise the
 fixture the caller just attached would be silently discarded and the version permanently
-stranded at `pending`. (This was itself a bug caught and fixed in review; see §10.)
+stranded at `pending`. (This was itself a bug caught and fixed in review; see §11.)
 
 ### 3.4 The unsandboxed seam, named explicitly in comments
 
@@ -488,7 +488,114 @@ reached, so a caller can distinguish "1000 events" from "at least 1000 events".
 
 ---
 
-## 9. The frontend — `client/`
+## 9. Serving — api-fication
+
+Not an agent. Promotion generates a pipeline; the pipeline runs deterministically. Four
+modules under `server/serving/`, each with one job.
+
+### 9.1 Why one image per version, and not one image for all of them
+
+A pickled estimator is only reliably loadable against the library versions that wrote it.
+A single shared serving image would have to load every customer's pickle with one
+scikit-learn, and version skew is *the* failure mode for pickles. So the SDK captures the
+training environment at `assemble()` time (`verity/src/verity/environment.py`) and the
+image is built from it — the image *is* the training environment, and skew is solved by
+construction rather than hoped away.
+
+The capture has to be client-side. Introspecting on the server would faithfully report the
+*server's* versions, which is precisely the wrong answer.
+
+A second consequence falls out for free: because the artifact is copied into the build
+context, the container holds its own model and needs **zero credentials** — the same
+principle as the eval sandbox, arrived at from a different direction.
+
+### 9.2 The input contract is measured, not guessed
+
+`execution.sandbox.introspect()` loads the artifact in the same scrubbed subprocess
+`predict()` runs in and reads `n_features_in_`, `feature_names_in_`, `classes_`, and
+whether `predict_proba` exists. This runs **at ingest, beside Hawkeye** — structure is a
+fact about the object, and only semantics need a language model.
+
+`feature_names` is `None` whenever the estimator was fit on arrays rather than a
+DataFrame. That is a real answer, not a failure: it makes the served API positional
+(`{"instances": [[1.0, 2.0]]}`) instead of named (`{"instances": [{"age": 1.0}]}`), and
+the generated app rejects the wrong shape rather than guessing which column is which.
+
+### 9.3 The app is a checked-in file, not codegen
+
+`serving/app_template.py` is a normal FastAPI app that reads `contract.json` next to
+itself. Only `requirements.txt` and one `FROM python:{version}-slim` line are templated.
+That is what lets `tests/test_serving_app.py` drive it directly against a temp directory
+with Docker nowhere in the loop.
+
+The model loads at **import**, so an artifact that cannot load in the built image means
+the container never reports healthy and the deploy fails loudly — rather than succeeding
+and failing on a customer's first request.
+
+Named-feature models are handed a DataFrame rather than a bare array. scikit-learn
+otherwise warns on *every* `predict()` call for the rest of the container's life.
+
+### 9.4 Dependencies before the model, deliberately
+
+`serving/build.py` renders the Dockerfile with `COPY requirements.txt` and
+`RUN pip install` **before** `COPY model.pkl`. Docker then reuses the cached pip layer for
+any later model sharing that dependency set — the difference between a 3-minute cold build
+and a seconds-long warm one. `tests/test_build_context.py` asserts the ordering, because a
+well-meaning reorder would silently cost minutes per deploy and break nothing visible.
+
+### 9.5 The runtime seam
+
+`serving/runtime.py` exposes `build` / `run` / `stop`, and `DockerRuntime` is the only
+implementation. Ports are ephemeral — Docker assigns, the code reads back — so there is no
+port registry to drift out of sync with reality. Everything above the file talks to the
+interface, so an ECS or Fargate runtime is a new class plus one wiring change.
+
+### 9.6 Ordering and teardown
+
+`serving/deploy.py` writes a `building` row, renders, builds, runs, polls `/health`, then
+flips the row to `live`. Only **after** that does it stop the container the promotion
+displaced. Tearing down first would open a window with nothing serving at all, and
+`tests/test_deploy.py` asserts the order rather than trusting it.
+
+Teardown is best-effort: the new version is already live, so failing its deploy because an
+already-dead old container could not be stopped would be strictly worse than a stale row.
+
+### 9.7 Non-fatal, for the same reason Falcon is
+
+`orchestrator._deploy()` swallows exceptions and returns `None`, exactly like
+`_configure_monitoring`. Deploy runs *after* the version is `production`; a build failure
+must not report a promotion that genuinely succeeded as a failure. The `failed` deployment
+row carries the reason. Verified live against an unreachable Docker daemon.
+
+Deploy is also skipped outright when `io_schema` is null. Serving a model whose input
+contract is unknown would mean guessing it, and a wrong guess returns confident nonsense
+instead of an error.
+
+### 9.8 The proxy, and the columns that were finally written
+
+`POST /users/{user_id}/models/{name}/predict` resolves the production version, finds its
+live deployment, forwards the body, and returns the container's answer. `user_id` sits in
+the path because model names are unique per user, not globally, and no auth exists yet to
+supply it implicitly; at V1.5 it collapses to `/models/{name}/predict`.
+
+Three distinct 404s — no such model, promoted but not deployed, no live deployment —
+because they are opposite problems with opposite fixes.
+
+Telemetry goes through `serving/sink.py`, a bounded queue drained by a background thread,
+mirroring the SDK reporter's contract (§8.4). Recording synchronously would put a database
+round trip in front of every prediction. **This is where `telemetry_event.inputs` and
+`.prediction` finally get written** — they were created with Falcon and stayed null,
+because a customer-hosted model never had reason to ship payloads back. Drift detection
+becomes possible here and not before.
+
+Worth seeing side by side, from the live run: the proxy measures ~24 ms end-to-end, while
+the `eval_reference` sitting beside it in the same response reads 0.19 ms. Both are honest;
+they measure different things. The 128× gap is exactly why Falcon tags its numbers
+`"basis": "sandbox_feasibility"` and compares nothing.
+
+---
+
+## 10. The frontend — `client/`
 
 Next.js 16 (App Router), a single client component (`client/src/app/page.tsx`) that talks
 **directly** to the FastAPI server — no proxy, no Next.js API route in between.
@@ -508,7 +615,7 @@ Two backend gaps this surfaced and fixed, not just the UI itself: `server/main.p
 CORS configuration at all** (`main.py:26-31` adds it, scoped to `localhost:3000` — no auth
 exists yet, so this is intentionally not `allow_origins=["*"]`), and the root `.gitignore`'s
 bare `demo/` pattern was silently matching `client/public/demo/` too — the same *category*
-of bug as `verity/tests` being gitignored project-wide (§10), scoped to `/demo/` (root-anchored)
+of bug as `verity/tests` being gitignored project-wide (§11), scoped to `/demo/` (root-anchored)
 once found.
 
 Verified against the real backend, not just `next build`: a Node script replicating the
@@ -519,7 +626,7 @@ genuine server responses, not fixtures.
 
 ---
 
-## 10. Repo-hygiene bugs found by building the system, not by looking for them
+## 11. Repo-hygiene bugs found by building the system, not by looking for them
 
 Worth its own section because the pattern repeated twice, and both times the discovery
 mechanism was the same: doing real work surfaced a class of bug no amount of staring at the
@@ -550,7 +657,7 @@ on paper.
 
 ---
 
-## 11. End-to-end trace of one call
+## 12. End-to-end trace of one call
 
 `verity.assemble(model, user_id="u", name="fraud-classifier", X_test=X, y_test=y)`, model
 not previously seen, against a local server:
@@ -592,18 +699,42 @@ main.ingest()
            ├ link_model_version(model_version_id, model_id)
            ├ verdict == "pass" → find_production_version → None (first version)
            └ promote_model_version(...) → status "production"
+      ├ introspect_fn(payload) → io_schema                      (§9.2)
+      │    subprocess -m execution.runner, mode="introspect"
       ├ status == "production" → _configure_monitoring(...)  [Falcon]
       │    ├ build_eval_reference(scores) → resource.* hoisted, quality nested  (§8.2)
       │    └ save_monitoring_config(...) → mcfg_...
+      ├ status == "production" → _deploy(...)                    (§9.6)
+      │    ├ save_deployment(status="building") → dep_...
+      │    ├ render_context(...) → Dockerfile, requirements, app.py, model.pkl
+      │    ├ runtime.build(...) → verity-model:mv_...
+      │    ├ runtime.run(...) → container_id, ephemeral host_port
+      │    ├ wait_healthy(...) → /health answers 200
+      │    ├ update_deployment(status="live", host_port=...)
+      │    └ archived? → stop that container, mark its row `stopped`
       return {status: "production", model_id: "mdl_...", eval_run: {...},
-              monitoring_config: {...}, ...}
+              monitoring_config: {...}, deployment: {...}, ...}
 ```
 
 Two LLM calls total, both to the same Groq-compatible endpoint. Exactly one subprocess
 spawn. Falcon adds neither: it reads the `eval_run` that was written three lines earlier.
 Everything else is in-process Python calling injected collaborators.
 
-Live traffic arrives separately and later, on its own route:
+A prediction against the served version, afterwards:
+
+```
+POST /users/u_1/models/served-demo/predict  {"instances": [[0.0], [3.0]]}
+ ├ find_production_version_by_name(u_1, served-demo) → mv_...
+ ├ find_live_deployment(mv_...) → dep_..., host_port 58218
+ ├ transport.post("http://localhost:58218/predict", json=body)
+ │    the container: _encode() validates arity/names → MODEL.predict(X)
+ │    → {"predictions": [0, 1], "probabilities": [[...], [...]]}
+ └ sink.record({... inputs, prediction, latency_ms ...})   non-blocking  (§9.8)
+      background thread, every 5s → save_telemetry_events()
+```
+
+When the customer hosts the model themselves instead, the same telemetry arrives on its own
+route from the SDK:
 
 ```
 verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
@@ -616,7 +747,7 @@ verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
 
 ---
 
-## 12. Extension points
+## 13. Extension points
 
 | Seam | Add by | Touches |
 |---|---|---|
@@ -624,29 +755,32 @@ verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
 | New metric | new key in `_METRIC_FNS[section]` | `agents/brain2/nat/score.py` only |
 | New Atlas section (DL/RL/GenAI) | new key in `_ATLAS`/`_SUPPORTED` | `agents/brain2/nat/resolve.py` only |
 | New blob backend (R2, MinIO) | set `S3_ENDPOINT_URL` | zero code |
+| New container runtime (ECS, Fargate) | new class with `build`/`run`/`stop` | `serving/runtime.py` + one line in `serving/deploy.py` |
+| New sandbox mode | new entry in `_MODES` | `execution/runner.py` only |
 | New LLM provider | change `VERITY_LLM_BASE_URL`/`_API_KEY` | zero code, both agents move together |
 | Swap any agent/store in a test | pass a fake for the `_fn`/`_store` param | nothing else — that's the whole point of §2.2 |
 
 ---
 
-## 13. Repo map — where to look for what
+## 14. Repo map — where to look for what
 
 | Path | Contents |
 |---|---|
-| `server/main.py` | FastAPI app, CORS, three routes (`/ingest`, `/telemetry`, `/models/{id}/telemetry`), DI wiring |
+| `server/main.py` | FastAPI app, CORS, four routes (`/ingest`, `/telemetry`, `/models/{id}/telemetry`, `/users/{id}/models/{name}/predict`), DI wiring |
 | `server/orchestrator.py` | `build_artifact` — sequences all four agents |
 | `server/telemetry.py` | `summarize()` — pure function, no I/O (§8.6) |
+| `server/serving/` | `app_template.py` (the served app), `build.py` (context), `runtime.py` (Docker seam), `deploy.py` (orchestration), `sink.py` (non-blocking telemetry) |
 | `server/storage/models/` | `S3BlobStore`, `SupabaseMetadataStore` |
-| `server/execution/` | `sandbox.py` (parent), `runner.py` (child, standalone) |
+| `server/execution/` | `sandbox.py` (`execute` + `introspect`), `runner.py` (child, standalone, dispatches on `mode`) |
 | `server/migrations/` | Alembic revisions — `model`, `model_version`, `manifest`, `eval_run`, `telemetry_event`, `monitoring_config` |
-| `server/tests/` | 132 tests, hand-written fakes, no `unittest.mock` |
+| `server/tests/` | 207 tests, hand-written fakes, no `unittest.mock` |
 | `agents/provider.py` | shared LLM base URL / default model |
 | `agents/brain1/hawkeye/` | identification — one LLM call, one pydantic model |
 | `agents/brain2/nat/` | `evaluate.py` (orchestration), `resolve.py` (LLM), `score.py` (deterministic), `registry.py` + `mechanisms/` (dispatch) |
 | `agents/brain3/fury/` | `registry.py` — dedup, identity, promotion, archival |
 | `agents/brain4/falcon/` | `monitor.py` — the LLM-free agent; reference lifted from `eval_run` |
-| `verity/src/verity/` | SDK — `client.py`, `transport.py`, `serialize.py`, `fixture.py`, `monitor.py`, `cli.py` |
-| `verity/tests/` | 38 tests, same conventions as `server/tests/` |
+| `verity/src/verity/` | SDK — `client.py`, `transport.py`, `serialize.py`, `fixture.py`, `monitor.py`, `environment.py`, `cli.py` |
+| `verity/tests/` | 45 tests, same conventions as `server/tests/` |
 | `client/src/app/page.tsx` | the intake form — the one client component |
 | `client/src/lib/verity.ts` | browser-side hashing + `/ingest` call |
 | `client/public/demo/` | pre-baked demo model + fixture |
@@ -658,7 +792,7 @@ verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
 
 ---
 
-## 14. Recurring design idioms
+## 15. Recurring design idioms
 
 1. **Pure functions, injected collaborators, lazy real defaults.** Every agent boundary
    (`identify_fn`, `evaluate_fn`, `find_existing_fn`, `register_fn`, `execute_fn`,

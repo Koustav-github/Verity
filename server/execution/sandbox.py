@@ -22,19 +22,13 @@ def _child_env():
     return {name: os.environ[name] for name in _PASSTHROUGH_ENV if name in os.environ}
 
 
-def execute(*, model_payload, X, timeout=60):
-    """Run a model against X in an isolated child process.
-
-    Returns {"y_pred", "y_proba", "resource"}. Raises SandboxError if the child
-    crashed, timed out, or returned something unreadable — Nat turns that into an
-    `error` verdict rather than letting it escape.
-    """
-    job = cloudpickle.dumps({"model_bytes": model_payload, "X": X})
+def _run(job, *, timeout):
+    blob = cloudpickle.dumps(job)
 
     try:
         completed = subprocess.run(
             [sys.executable, "-m", "execution.runner"],
-            input=job,
+            input=blob,
             capture_output=True,
             timeout=timeout,
             cwd=str(_SERVER_DIR),
@@ -55,3 +49,23 @@ def execute(*, model_payload, X, timeout=60):
         error = result["error"]
         raise SandboxError(f"{error['type']}: {error['message']}")
     return result
+
+
+def execute(*, model_payload, X, timeout=60):
+    """Run a model against X in an isolated child process.
+
+    Returns {"y_pred", "y_proba", "resource"}. Raises SandboxError if the child
+    crashed, timed out, or returned something unreadable — Nat turns that into an
+    `error` verdict rather than letting it escape.
+    """
+    return _run({"model_bytes": model_payload, "X": X}, timeout=timeout)
+
+
+def introspect(*, model_payload, timeout=30):
+    """Read the fitted estimator's input/output surface, without predicting.
+
+    Same containment as execute(): loading an artifact is arbitrary code execution
+    whether or not anything is predicted afterwards, so it happens behind the same
+    credential allowlist. Shorter default timeout because nothing here does real work.
+    """
+    return _run({"model_bytes": model_payload, "mode": "introspect"}, timeout=timeout)

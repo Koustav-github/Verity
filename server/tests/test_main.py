@@ -304,3 +304,57 @@ def test_reading_telemetry_for_an_unmonitored_version_still_returns_a_summary():
     body = response.json()
     assert body["request_count"] == 0
     assert body["eval_reference"] is None
+
+
+def test_ingest_forwards_the_captured_environment_to_the_orchestrator():
+    import json
+
+    captured = {}
+
+    def fake_build_artifact(**kwargs):
+        captured.update(kwargs)
+        return {"model_version_id": "mv_1"}
+
+    app.dependency_overrides[get_build_artifact] = lambda: fake_build_artifact
+    try:
+        TestClient(app).post(
+            "/ingest",
+            files={"artifact": ("artifact", b"bytes")},
+            data={
+                "user_id": "u_1",
+                "name": "m",
+                "sha256": "abc",
+                "environment": json.dumps(
+                    {"python_version": "3.12", "packages": {"numpy": "2.3.5"}}
+                ),
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert captured["environment"] == {
+        "python_version": "3.12",
+        "packages": {"numpy": "2.3.5"},
+    }
+
+
+def test_ingest_accepts_an_upload_from_an_sdk_that_captures_no_environment():
+    captured = {}
+
+    def fake_build_artifact(**kwargs):
+        captured.update(kwargs)
+        return {"model_version_id": "mv_1"}
+
+    app.dependency_overrides[get_build_artifact] = lambda: fake_build_artifact
+    try:
+        TestClient(app).post(
+            "/ingest",
+            files={"artifact": ("artifact", b"bytes")},
+            data={"user_id": "u_1", "name": "m", "sha256": "abc"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    # Older SDKs predate environment capture; the image then falls back to a default
+    # Python and an empty pin set, which is worse but must not be fatal.
+    assert captured["environment"] is None

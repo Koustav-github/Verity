@@ -148,3 +148,52 @@ the record is being maintained after the reboot
      model with the SDK reporting back. That was my inference from an unanswered question, not a
      decision anyone made, and it had already been written into the Falcon spec as settled fact.
      Verity serves; self-hosting plus SDK telemetry stays as the secondary path.
+
+9. api-fication is in — Verity serves the models it promotes. A version that reaches
+   `production` is now built into its own container image, started, health-checked, and put
+   behind `POST /users/{user_id}/models/{name}/predict`. This is the first entry where "the
+   deployment side ends" is literally true rather than aspirational.
+   - **One image per version, built from the training environment.** The SDK captures its own
+     `scikit-learn`/`numpy`/`scipy`/`cloudpickle`/Python versions at `assemble()` time and ships
+     them; the image is built from those pins. A pickle is only reliably loadable against the
+     versions that wrote it, so a single shared serving image was never an option — and the
+     capture has to happen client-side, because introspecting on the server would faithfully
+     report the wrong machine. A free consequence: the artifact is copied into the image, so the
+     serving container needs **zero credentials**, the same principle the eval sandbox already
+     had, reached from a different direction.
+   - **The request schema is measured, not guessed.** `execution.sandbox.introspect()` reads
+     `n_features_in_`, `feature_names_in_`, `classes_` and `predict_proba` off the fitted
+     estimator inside the same scrubbed subprocess `predict()` already ran in, at ingest, beside
+     Hawkeye. Structure is a fact about the object; only semantics need an LLM. `feature_names`
+     being None is a real answer — it makes the served API positional rather than named, instead
+     of inventing column names.
+   - **`manifest.io_schema` is populated for the first time.** It had been specced in Schemas.md
+     since the first draft and never created.
+   - **`telemetry_event.inputs` and `.prediction` are non-null for the first time in this
+     project's history.** They were created with Falcon and left empty because a customer-hosted
+     model has no reason to ship payloads back. Verity serving is what makes them writable, and
+     therefore what unblocks drift detection — that is why serving came before the drift metrics
+     rather than after.
+   - **Deploy is non-fatal, like Falcon.** It runs after the version is already `production`, so
+     a build failure writes a `failed` deployment row and returns `deployment: null` rather than
+     500ing a promotion that genuinely succeeded. Verified live by pointing the server at an
+     unreachable Docker daemon: `DockerRuntime` raised, `deploy()` recorded the reason in the
+     real database, and the orchestrator swallowed it — all three layers behaved.
+   - Verified live end-to-end: a real 585 MB image built and started, the proxy returned real
+     predictions, a second upload under the same name promoted and **tore down the container it
+     replaced** (old one `Exited (0)`, proxy re-routed with no intervention), and telemetry rows
+     landed carrying inputs and predictions.
+   - **Two bugs found by running it for real, not by tests.** The SDK's 60s HTTP timeout could
+     not survive a cold container build (~3 min), so the client reported `ReadTimeout` for a
+     request the server went on to complete successfully — raised to 600s and made configurable.
+     And `uv sync` without `--extra dev` silently pruned pytest from the server venv, so
+     `uv run pytest` fell back to the *global* interpreter; the suite kept passing against the
+     wrong packages, and a pandas test that should have skipped "passed" by accident. Fixed with
+     `uv sync --extra dev`, after which the full suite runs on the venv it claims to.
+   - **One honest loose end:** `manifest.serving_pattern` was created and is never written.
+     Stamping it would mean updating an append-only evidence row after the fact, and the
+     `deployment` row already records how a version is served. It stays empty rather than being
+     written dishonestly; a later migration drops it if nothing claims it.
+   Still not automated past here: drift and data-quality metrics (now unblocked), alerting (V7),
+   the `agent_run` audit trail, comparative promotion gating, and anything beyond a single
+   local replica — deployments live and die with the machine running Verity.

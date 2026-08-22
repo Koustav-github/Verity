@@ -105,17 +105,24 @@ def test_build_artifact_stores_bytes_metadata_and_manifest_then_returns_a_record
     assert metadata_store.model_versions[FAKE_MODEL_SHA256]["artifact_uri"] == f"s3://artifacts/{FAKE_MODEL_SHA256}"
     assert metadata_store.model_versions[FAKE_MODEL_SHA256]["status"] == "pending"
     assert identified_models == [{"kind": "fake-model"}]
-    assert metadata_store.manifests["mv_123"] == {"framework": "sklearn", "model_class": "FakeModel"}
+    stored = metadata_store.manifests["mv_123"]
+    assert stored["framework"] == "sklearn"
+    assert stored["model_class"] == "FakeModel"
+    # api-fication adds two keys identification never produced: the measured input
+    # surface and the client-captured training environment.
+    assert "io_schema" in stored
+    assert stored["environment"] is None
     assert result == {
         "model_version_id": "mv_123",
         "artifact_uri": f"s3://artifacts/{FAKE_MODEL_SHA256}",
         "status": "pending",
-        "manifest": {"framework": "sklearn", "model_class": "FakeModel"},
+        "manifest": stored,
         "eval_run": None,
         "model_id": "mdl_123",
         "deduplicated": False,
         "archived_model_version_id": None,
         "monitoring_config": None,
+        "deployment": None,
     }
 
 
@@ -235,6 +242,7 @@ def test_an_exact_repeat_of_name_and_hash_short_circuits_before_anything_else_ru
         "deduplicated": True,
         "model_id": "mdl_existing",
         "monitoring_config": None,
+        "deployment": None,
     }
 
 
@@ -561,3 +569,120 @@ def test_an_upload_with_no_fixture_is_never_monitored():
 
     assert result["monitoring_config"] is None
     assert result["status"] == "pending"
+
+
+# --- api-fication: introspection at ingest, deploy on promotion --------------------
+
+def _build(**overrides):
+    """Run build_artifact with every collaborator faked, overriding as needed."""
+    payload = overrides.pop("payload", cloudpickle.dumps({"kind": "fake-model"}))
+    kwargs = {
+        "payload": payload,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "user_id": "u_1",
+        "name": "fake-model",
+        "args": {},
+        "blob_store": FakeBlobStore(),
+        "metadata_store": FakeMetadataStore(),
+        "identify_fn": fake_identify,
+        "introspect_fn": lambda p: {"n_features": 2, "feature_names": None,
+                                    "classes": [0, 1], "has_predict_proba": True},
+        "find_existing_fn": no_existing,
+        "register_fn": fake_register,
+        "deploy_fn": lambda **kw: {"id": "dep_1", "status": "live"},
+    }
+    kwargs.update(overrides)
+    return kwargs["metadata_store"], build_artifact(**kwargs)
+
+
+def test_the_manifest_carries_the_introspected_io_schema():
+    store, _ = _build()
+
+    assert store.manifests["mv_123"]["io_schema"]["n_features"] == 2
+
+
+def test_the_manifest_carries_the_environment_the_client_captured():
+    store, _ = _build(environment={"python_version": "3.12", "packages": {"numpy": "2.3.5"}})
+
+    assert store.manifests["mv_123"]["environment"]["python_version"] == "3.12"
+
+
+def test_a_failing_introspection_does_not_stop_the_pipeline():
+    def boom(payload):
+        raise RuntimeError("unreadable artifact")
+
+    _, result = _build(introspect_fn=boom)
+
+    # Identification and evaluation are still worth having without a serving schema.
+    # The version simply cannot be deployed, which the null io_schema records exactly.
+    assert result["manifest"]["io_schema"] is None
+    assert result["status"] == "pending"
+
+
+def test_deploy_fires_when_a_version_reaches_production():
+    calls = []
+
+    def recording_deploy(**kwargs):
+        calls.append(kwargs)
+        return {"id": "dep_1", "status": "live"}
+
+    def register_with_archive(**kwargs):
+        return {"model_id": "mdl_123", "status": "production",
+                "archived_model_version_id": "mv_old"}
+
+    _, result = _build(
+        register_fn=register_with_archive,
+        evaluate_fn=passing_eval,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "f" * 64},
+        configure_fn=lambda **kw: {"id": "mcfg_1"},
+        deploy_fn=recording_deploy,
+    )
+
+    assert result["deployment"] == {"id": "dep_1", "status": "live"}
+    assert calls[0]["archived_model_version_id"] == "mv_old"
+    assert calls[0]["io_schema"]["n_features"] == 2
+
+
+def test_deploy_does_not_fire_for_a_version_that_was_not_promoted():
+    calls = []
+
+    _, result = _build(deploy_fn=lambda **kw: calls.append(kw))
+
+    assert calls == []
+    assert result["deployment"] is None
+
+
+def test_deploy_is_skipped_when_the_input_surface_could_not_be_read():
+    calls = []
+
+    _, result = _build(
+        introspect_fn=lambda p: None,
+        register_fn=lambda **kw: {"model_id": "mdl_123", "status": "production",
+                                  "archived_model_version_id": None},
+        configure_fn=lambda **kw: {"id": "mcfg_1"},
+        deploy_fn=lambda **kw: calls.append(kw),
+    )
+
+    # Serving a model whose input contract is unknown would mean guessing it, and a
+    # wrong guess returns confident nonsense rather than an error.
+    assert calls == []
+    assert result["deployment"] is None
+    assert result["status"] == "production"
+
+
+def test_a_failing_deploy_does_not_fail_a_promotion_that_succeeded():
+    def boom(**kwargs):
+        raise RuntimeError("docker daemon unreachable")
+
+    _, result = _build(
+        register_fn=lambda **kw: {"model_id": "mdl_123", "status": "production",
+                                  "archived_model_version_id": None},
+        configure_fn=lambda **kw: {"id": "mcfg_1"},
+        deploy_fn=boom,
+    )
+
+    # The version genuinely IS production. Reporting the request as failed would be a
+    # lie about what happened — the same reasoning as _configure_monitoring.
+    assert result["status"] == "production"
+    assert result["deployment"] is None

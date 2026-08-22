@@ -17,10 +17,15 @@ def build_artifact(
     find_existing_fn=None,
     register_fn=None,
     configure_fn=None,
+    deploy_fn=None,
+    introspect_fn=None,
     fixture_payload=None,
     fixture_descriptor=None,
+    environment=None,
 ):
     identify_fn = identify_fn or _default_identify
+    introspect_fn = introspect_fn or _default_introspect
+    deploy_fn = deploy_fn or _default_deploy
     evaluate_fn = evaluate_fn or _default_evaluate
     find_existing_fn = find_existing_fn or _default_find_existing
     register_fn = register_fn or _default_register
@@ -55,6 +60,7 @@ def build_artifact(
                 "deduplicated": True,
                 "model_id": existing["model_id"],
                 "monitoring_config": None,
+                "deployment": None,
             }
 
     artifact_uri = blob_store.put(sha256, payload)
@@ -68,6 +74,12 @@ def build_artifact(
     # through execution/sandbox.py, which withholds every credential.
     model = cloudpickle.loads(payload)
     manifest = identify_fn(model)
+
+    # Structure is measured, not inferred. Hawkeye's LLM call answers "what kind of model
+    # is this"; introspection answers "what does its predict() actually take", which is a
+    # fact about the object and must never be guessed. Both land on the same manifest.
+    manifest["io_schema"] = _introspect(introspect_fn=introspect_fn, payload=payload)
+    manifest["environment"] = environment
 
     model_version_id = metadata_store.save_model_version(
         sha256=sha256,
@@ -116,6 +128,17 @@ def build_artifact(
             metadata_store=metadata_store,
         )
 
+    deployment = None
+    if registration["status"] == "production":
+        deployment = _deploy(
+            deploy_fn=deploy_fn,
+            model_version_id=model_version_id,
+            payload=payload,
+            manifest=manifest,
+            metadata_store=metadata_store,
+            archived_model_version_id=registration["archived_model_version_id"],
+        )
+
     return {
         "model_version_id": model_version_id,
         "artifact_uri": artifact_uri,
@@ -126,6 +149,7 @@ def build_artifact(
         "deduplicated": False,
         "archived_model_version_id": registration["archived_model_version_id"],
         "monitoring_config": monitoring_config,
+        "deployment": deployment,
     }
 
 
@@ -173,6 +197,46 @@ def _configure_monitoring(
         return None
 
 
+def _introspect(*, introspect_fn, payload):
+    """Never fatal. A model whose surface cannot be read is still worth identifying and
+    evaluating; it simply cannot be served, and a null io_schema records exactly that
+    rather than blocking the parts of the pipeline that do work."""
+    try:
+        return introspect_fn(payload)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _deploy(
+    *, deploy_fn, model_version_id, payload, manifest, metadata_store,
+    archived_model_version_id,
+):
+    """Stand the promoted version up, but never at the cost of the promotion itself.
+
+    Identical contract to _configure_monitoring, for an identical reason: this runs
+    AFTER the version is already `production`. A build failure must not 500 a request
+    whose promotion genuinely succeeded. The caller gets a null deployment — visible
+    rather than fabricated — and a `failed` row records why.
+
+    Skipped entirely when introspection produced nothing: serving a model whose input
+    contract is unknown would mean guessing it, and a wrong guess returns confident
+    nonsense rather than an error.
+    """
+    if not manifest.get("io_schema"):
+        return None
+    try:
+        return deploy_fn(
+            model_version_id=model_version_id,
+            payload=payload,
+            io_schema=manifest["io_schema"],
+            environment=manifest.get("environment") or {},
+            metadata_store=metadata_store,
+            archived_model_version_id=archived_model_version_id,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _default_identify(model):
     from agents.brain1.hawkeye.identify import identify
 
@@ -202,3 +266,15 @@ def _default_configure(**kwargs):
     from agents.brain4.falcon.monitor import configure
 
     return configure(**kwargs)
+
+
+def _default_introspect(payload):
+    from execution.sandbox import introspect
+
+    return introspect(model_payload=payload)
+
+
+def _default_deploy(**kwargs):
+    from serving.deploy import deploy
+
+    return deploy(**kwargs)

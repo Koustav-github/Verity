@@ -27,17 +27,22 @@ class SupabaseMetadataStore:
 
     def save_manifest(self, *, model_version_id, manifest):
         manifest_id = f"mf_{uuid.uuid4().hex}"
-        self.client.table("manifest").insert(
-            {
-                "id": manifest_id,
-                "model_version_id": model_version_id,
-                "framework": manifest["framework"],
-                "detected_via": manifest.get("detected_via"),
-                "model_class": manifest.get("model_class"),
-                "hyperparameters": manifest.get("hyperparameters"),
-                "task_type": manifest.get("task_type"),
-            }
-        ).execute()
+        row = {
+            "id": manifest_id,
+            "model_version_id": model_version_id,
+            "framework": manifest["framework"],
+            "detected_via": manifest.get("detected_via"),
+            "model_class": manifest.get("model_class"),
+            "hyperparameters": manifest.get("hyperparameters"),
+            "task_type": manifest.get("task_type"),
+        }
+        # Added only when actually present. A manifest written before api-fication
+        # legitimately carries none of these, and sending explicit nulls would make
+        # every pre-existing row indistinguishable from one whose introspection failed.
+        for column in ("io_schema", "environment", "serving_pattern"):
+            if manifest.get(column) is not None:
+                row[column] = manifest[column]
+        self.client.table("manifest").insert(row).execute()
         return manifest_id
 
     def save_eval_run(self, *, model_version_id, eval_run):
@@ -183,3 +188,39 @@ class SupabaseMetadataStore:
             .execute()
         )
         return result.data or []
+
+    def save_deployment(self, *, model_version_id, image_tag, status):
+        deployment_id = f"dep_{uuid.uuid4().hex}"
+        self.client.table("deployment").insert(
+            {
+                "id": deployment_id,
+                "model_version_id": model_version_id,
+                "image_tag": image_tag,
+                "status": status,
+            }
+        ).execute()
+        return deployment_id
+
+    def update_deployment(self, *, deployment_id, **fields):
+        # Open-ended on purpose: the build path fills container_id/host_port/endpoint_url
+        # in the same round trip that flips the status to `live`, and the teardown path
+        # writes only a status. Unlike the registry mutations, a zero-row update is not
+        # raised on — a deployment row that has vanished must not fail a live request.
+        self.client.table("deployment").update(fields).eq("id", deployment_id).execute()
+
+    def find_live_deployment(self, *, model_version_id):
+        response = (
+            self.client.table("deployment")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .eq("status", "live")
+            .limit(1)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
+    def find_production_version_by_name(self, *, user_id, name):
+        model = self.find_model(user_id=user_id, name=name)
+        if model is None:
+            return None
+        return self.find_production_version(model_id=model["id"])

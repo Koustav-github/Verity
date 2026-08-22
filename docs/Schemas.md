@@ -20,6 +20,18 @@ deliberately unpinned.
 - **Deletes** — soft (`deleted_at`) everywhere except telemetry, which ages out by retention
   policy.
 
+**Every V1 table below is stated against the migrations that actually ran.** This file spent
+most of its life describing intent, and drifted: columns were specced here and never created,
+created and never specced, and one whole table was listed as V1 while no migration for it
+exists. Tables where spec and reality agree say so in one line; where they disagree, each column
+carries a marker, so the drift cannot come back silently.
+
+| | Meaning |
+|---|---|
+| ✅ | in the database — a migration in `server/migrations/versions/` creates it |
+| ⬜ | specced, not built. Nothing needs it yet; the version that needs it adds it |
+| ❌ | specced, then **cut**. Kept visible with the reason, so it isn't re-proposed |
+
 ---
 
 ## V1 — The Loop
@@ -36,6 +48,8 @@ The logical model, stable across versions.
 | `task_type` | text | Atlas lookup key, e.g. `binary_classification` |
 | `created_at` | timestamptz | |
 
+Every column here is built (`c8e51f4d9a06`).
+
 `model_class` is aspirational as written above: the shipped registry
 (`agents/brain3/fury/registry.py`) copies this value straight from Hawkeye's manifest,
 which is a framework class name like `LogisticRegression` (see
@@ -47,17 +61,19 @@ taxonomy is open.
 One row per distinct artifact. **Version identity is the content hash** — re-registering an
 unchanged artifact dedupes; any byte change is inherently a new version.
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | text PK | `mv_…` |
-| `model_id` | text FK → `model` | |
-| `artifact_sha256` | text | unique per model; the version identity |
-| `artifact_uri` | text | where it lives (not necessarily custody) |
-| `artifact_bytes` | bigint | drives custody vs. pointer decision |
-| `status` | text | `pending` · `staging` · `staging_failed` · `production` · `archived` |
-| `manifest_id` | text FK → `manifest` | |
-| `promoted_from` | text FK → `eval_run` | the evidence that promoted it; null if never promoted |
-| `created_at` | timestamptz | |
+| Column | Type | Built? | Notes |
+|---|---|---|---|
+| `id` | text PK | ✅ | `mv_…` |
+| `artifact_sha256` | text | ✅ | unique per model; the version identity |
+| `artifact_uri` | text | ✅ | where it lives (not necessarily custody) |
+| `user_id` | text | ✅ | tenancy key until `org_id` replaces it at V1.5 |
+| `args` | jsonb | ✅ | whatever the caller passed alongside the artifact |
+| `status` | text | ✅ | `pending` · `staging` · `staging_failed` · `production` · `archived` |
+| `model_id` | text FK → `model` | ✅ | added later, by `d4a729c6e153` |
+| `promoted_from` | text FK → `eval_run` | ✅ | the evidence that promoted it; null if never promoted |
+| `created_at` | timestamptz | ✅ | |
+| `artifact_bytes` | bigint | ⬜ | would drive the custody-vs-pointer decision. Nothing needs it until V3 hosts weights too large to keep |
+| `manifest_id` | text FK → `manifest` | ❌ | **cut.** The relationship already exists as `manifest.model_version_id`; a second pointer in the opposite direction is two facts that can disagree |
 
 `promoted_from` is the important one: promotion is a *consequence of evidence*, and the row
 records which evidence. A production version with a null `promoted_from` is an incident.
@@ -86,24 +102,39 @@ Hawkeye's output. Append-only.
 | `hyperparameters` | jsonb | ✅ | whatever was visible in the artifact |
 | `task_type` | text | ✅ | coarse only — `classification` · `regression` · … |
 | `created_at` | timestamptz | ✅ | |
-| `io_schema` | jsonb | ⬜ | inputs/outputs, shapes, dtypes, roles |
-| `serving_pattern` | text | ⬜ | `in_process` · `http_endpoint` · `container` |
+| `io_schema` | jsonb | ✅ | the introspected input surface — `n_features`, `feature_names`, `classes`, `has_predict_proba`, `estimator_class` (`a7f19c4e02b3`) |
+| `environment` | jsonb | ✅ | the training environment the SDK captured — Python version and pinned package versions (`a7f19c4e02b3`) |
+| `serving_pattern` | text | ⚠️ | column created by `a7f19c4e02b3`, **never written**. See the note below |
 | `platform` | text | ⬜ | `windows` · `macos` · `linux` · `docker` · `k8s` |
 | `confidence` | jsonb | ⬜ | per-field confidence scores |
 | `review_required` | jsonb | ⬜ | fields Hawkeye could not resolve, and what they block |
 | `declared_overrides` | jsonb | ⬜ | human/lineage-supplied values filling those gaps |
 
 The ⬜ rows are specced here and **not in the table** — `90fc6eeb5714_create_manifest_table.py`
-created six columns, and `a1c4e7b90d33` added `task_type`. Nothing has needed the rest yet.
+created six columns, `a1c4e7b90d33` added `task_type`, and `a7f19c4e02b3` added the three
+serving columns. Nothing has needed the rest yet.
+
+`serving_pattern` is the one honest loose end: api-fication created the column intending to
+stamp it `container` on deploy, and then didn't. Writing it would mean updating a `manifest`
+row after the fact, and this table is append-only *because* it is evidence — so the value
+would have to be back-filled by the very step it is meant to describe. The `deployment` row is
+the authoritative record of how a version is served, and it already exists. The column stays
+empty rather than being written dishonestly; if nothing ever claims it, a later migration
+drops it.
+
+`environment` is an addition to this spec rather than an original member of it, made for the
+same reason `eval_run.fixture` was: without it, `io_schema` describes a model whose runtime
+requirements are unrecorded, and a serving image could not be rebuilt reproducibly from stored
+rows alone. It belongs on the manifest because it describes the artifact *as identified*, and
+because a redeploy has to work without the original upload still being in memory.
 
 api-fication is what needs `io_schema` and `serving_pattern`, and it is worth being precise
 about where each field comes from, because they have different trust levels:
 
 | Field | Source | Why there |
 |---|---|---|
-| `n_features`, `feature_names`, `classes`, `has_predict_proba` | sandbox introspection of the artifact | read off the fitted estimator; deterministic, no LLM |
-| training environment (`sklearn`, `numpy`, `python` versions) | **captured client-side by the SDK at `assemble()`** | must be client-side — introspecting on the server would report the *server's* versions, which is exactly the wrong answer for a pickle |
-| `serving_pattern` | set to `container` when a version deploys | a record of what happened, not a prediction |
+| `n_features`, `feature_names`, `classes`, `has_predict_proba` | `execution.sandbox.introspect()` — the same scrubbed subprocess `predict()` runs in | read off the fitted estimator; deterministic, no LLM. Loading an artifact is arbitrary code execution whether or not anything is predicted afterwards, so it happens behind the same credential allowlist |
+| training environment (`scikit-learn`, `numpy`, `python`, `cloudpickle` versions) | **`verity.environment.capture()`, client-side at `assemble()`** | must be client-side — introspecting on the server would report the *server's* versions, which is exactly the wrong answer for a pickle written elsewhere |
 
 `review_required` and `declared_overrides` remain the honest core of the design, whenever they
 land. Hawkeye can read an ONNX graph's *shape* but not its *semantics* — six anonymous float
@@ -126,13 +157,27 @@ Nat's output. Append-only.
 | `verdict` | text | `pass` · `fail` · `error` |
 | `failed_on` | jsonb | which metrics missed, with example ids |
 | `test_set_ref` | text | pointer to the exact test set used |
-| `started_at` / `finished_at` | timestamptz | |
+| `fixture` | jsonb | the typed fixture descriptor — `kind`, `uri`, `sha256`, `spec` |
+| `error` | jsonb | why a run ended `error`; null otherwise |
+| `started_at` / `finished_at` / `created_at` | timestamptz | |
+
+Every column here is built. `fixture` and `error` are deliberate extensions over this file's
+original list, both documented in `b2d5f8c14e77_create_eval_run_table.py`: `error` because
+`verdict` can be `error` and the reason doesn't belong in `failed_on` (which means *which
+metrics missed*), and `fixture` because `test_set_ref` is a bare pointer that can't say what
+kind of fixture it points at — the field the mechanism registry dispatches on.
 
 `thresholds` is stored **as applied**, not referenced — a later threshold change must never
 retroactively alter what a past gate decided.
 
 ### `agent_run`
-Audit trail across all four agents. The thing that makes agentic behavior debuggable.
+Audit trail across all four agents. The thing that makes agentic behaviour debuggable.
+
+**⬜ No migration creates this table.** It has been listed under V1 since the first draft and
+was never built — the pipeline runs, and nothing records *that it ran*. Today a promotion is
+reconstructible from `eval_run` and `promoted_from`, which is the load-bearing part; what is
+missing is the per-agent trace of inputs, outputs, and tool calls. Listed here as V1 scope that
+V1 did not deliver, rather than quietly moved to a later version.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -159,6 +204,8 @@ outgrows it.
 | `inputs` / `prediction` | jsonb | sampled, not necessarily every request |
 | `error_type` | text | |
 
+Every column here is built (`e91a3d7c5b28`).
+
 `inputs` and `prediction` are created but **not written at V1**. They exist to support drift
 detection, which is V7; the V1 metric set — request count, latency percentiles, error rate —
 needs neither. Leaving them null removes the entire sampling-policy question at V1 (no rate to
@@ -177,6 +224,8 @@ Falcon's output — written when a version reaches `production`.
 | `eval_reference` | jsonb | eval-time measured values, carrying `"basis": "sandbox_feasibility"` |
 | `created_at` | timestamptz | |
 
+Every column here is built (`e91a3d7c5b28`).
+
 `eval_reference` is a **feasibility reference, not a production baseline**. Its numbers are
 lifted from the `eval_run` that promoted the version, which measured them in a single-process,
 single-client, cold sandbox — production latency under real concurrency will be materially
@@ -184,8 +233,8 @@ higher. Nothing in V1 compares against it; the `basis` marker exists so V7's rul
 tell what kind of number it is reading.
 
 ### `deployment`
-Where a promoted version actually runs. **Designed, not yet built** — this is api-fication's
-table, listed under V6 in earlier drafts of this file and pulled forward because V1 serves.
+Where a promoted version actually runs. Created by `c3b8e15d47af`; listed under V6 in earlier
+drafts of this file and pulled forward because V1 now serves. Every column below is built.
 
 | Column | Type | Notes |
 |---|---|---|

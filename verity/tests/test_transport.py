@@ -81,3 +81,51 @@ def test_upload_omits_the_fixture_parts_entirely_when_there_is_no_fixture():
     content = captured["request"].content
     assert b'name="fixture"' not in content
     assert b"fixture_descriptor" not in content
+
+
+def test_upload_sends_the_environment_as_a_json_form_field():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={"status": "pending"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    upload(
+        payload=b"fake-artifact-bytes",
+        sha256="abc123",
+        user_id="u_1",
+        name="fraud-classifier",
+        args={},
+        endpoint="http://verity-server.test",
+        client=client,
+        environment={"python_version": "3.12", "packages": {"numpy": "2.3.5"}},
+    )
+
+    content = captured["request"].content
+    assert b'name="environment"' in content
+    assert b'"numpy": "2.3.5"' in content
+    assert b'"python_version": "3.12"' in content
+
+
+def test_upload_omits_the_environment_field_when_none_was_captured():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={"status": "pending"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    upload(
+        payload=b"fake-artifact-bytes",
+        sha256="abc123",
+        user_id="u_1",
+        name="fraud-classifier",
+        args={},
+        endpoint="http://verity-server.test",
+        client=client,
+    )
+
+    assert b'name="environment"' not in captured["request"].content

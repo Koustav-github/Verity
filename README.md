@@ -27,8 +27,8 @@ five minutes.
 ## Current status
 
 All four V1 agents are built. Hawkeye (identification), Nat (evaluation), Fury (registry),
-and Falcon (observability) are implemented and tested — 132 server tests + 38 SDK tests, TDD
-throughout. One call, `verity.assemble(model, name=..., user_id=..., X_test=..., y_test=...)`,
+and Falcon (observability) are implemented and tested — 207 server tests + 45 SDK tests, TDD
+throughout, plus container serving on top of them. One call, `verity.assemble(model, name=..., user_id=..., X_test=..., y_test=...)`,
 runs the whole chain: identify the framework and task, evaluate against a labeled holdout with
 quality and systemic metrics (latency, memory, CPU, GPU) gating equally, promote straight to
 `production` on a pass while archiving whatever version it replaces, and switch monitoring on
@@ -43,14 +43,22 @@ one class gets finished end to end, api-fication and drift metrics included, bef
 started. Deep learning, LLM/RAG, and RL each widen the model-class axis later (V3–V5 below) and
 each brings its own metric set; none of them is being half-built now.
 
-**api-fication — standing a promoted version up behind a callable endpoint — is designed and
-not yet built.** The shape is settled: one container image per promoted version, built from the
-training environment the SDK captures at upload time, with the request schema derived from the
-model's own introspected surface rather than hand-written. Deploy fires automatically when Fury
-promotes, and Verity proxies `/models/{name}/predict` to the live container. That proxy is also
-the first point at which Verity sees production *inputs* at all — which is what makes drift
-detection possible, and why it comes before the drift metrics rather than after. Until it lands,
-the customer serves the model themselves and the SDK reports telemetry back.
+**api-fication is built.** A version promoted to `production` is now built into its own
+container image — from the training environment the SDK captured at upload, so a pickle is
+never loaded against a different scikit-learn than wrote it — started, health-checked, and
+served behind `POST /users/{user_id}/models/{name}/predict`. The request schema is derived from
+the model's own introspected surface (`n_features`, `feature_names`, `classes`), never guessed.
+Promoting a new version tears down the container it replaced.
+
+Deploy is deliberately **non-fatal**: it runs after the version is already `production`, so a
+build failure leaves a `failed` deployment row and a null `deployment` in the response rather
+than reporting a promotion that genuinely succeeded as a failure. Verified live by pointing the
+server at an unreachable Docker daemon.
+
+The proxy is also the first point at which Verity has ever seen production *inputs* —
+`telemetry_event.inputs` and `.prediction` were created with Falcon and stayed null until now.
+That is what makes drift detection possible, and why serving came before the drift metrics
+rather than after.
 
 Also missing: alerting. Falcon collects and exposes telemetry but compares nothing and fires
 nothing, because the only baseline available today is a cold-sandbox feasibility figure rather
@@ -116,8 +124,8 @@ LightGBM. No multi-tenancy, no dashboard, no alerting.
 | Hawkeye | sklearn / XGBoost / LightGBM / ONNX artifact → manifest; introspects the input surface; flags unrecoverable semantics |
 | Nat | Atlas lookup → metric set; labeled-holdout eval; quality and systemic metrics gate equally |
 | Fury | `name` + content-hash version identity; a passing verdict promotes straight to production |
-| *serving* | one container image per promoted version; request schema generated from the manifest; Verity proxies `/predict` |
-| Falcon | request count, latency percentiles, error rate — from the proxy when Verity serves, from the SDK when the customer does |
+| *serving* | one container image per promoted version; request schema generated from the introspected surface; Verity proxies `/predict` |
+| Falcon | request count, latency percentiles, error rate — recorded by the proxy when Verity serves, by the SDK when the customer does |
 
 Serving is not a fifth agent. It is generated pipeline, triggered by promotion — see
 [agents configure, pipelines execute](#the-design-principle-agents-configure-pipelines-execute).
