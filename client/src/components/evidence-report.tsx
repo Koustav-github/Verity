@@ -1,5 +1,6 @@
 import type { IngestResult } from "@/lib/verity";
 import { VerdictStamp } from "./verdict-stamp";
+import { TelemetryPanel } from "./telemetry-panel";
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -108,6 +109,10 @@ export function EvidenceReport({ result }: { result: IngestResult }) {
         <Row label="model_version_id" value={result.model_version_id} />
         <Row label="status" value={result.status} />
       </div>
+
+      {result.monitoring_config && (
+        <TelemetryPanel modelVersionId={result.model_version_id} />
+      )}
     </section>
   );
 }

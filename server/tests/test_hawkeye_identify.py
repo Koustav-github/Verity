@@ -137,12 +137,17 @@ def test_the_llm_client_reads_the_shared_verity_credentials(monkeypatch):
 
 
 def test_identify_defaults_to_the_configured_groq_model(monkeypatch):
+    # Asserts against the shared constant, not a literal: this test cares that the
+    # provider default is what gets used when no per-agent override is set. Pinning the
+    # literal string only bought a broken test the day Groq retired that model.
+    from agents.provider import DEFAULT_MODEL
+
     monkeypatch.delenv("HAWKEYE_LLM_MODEL", raising=False)
     client = FakeClient(json.dumps({"framework": "sklearn"}))
 
     identify(object(), client=client)
 
-    assert client.chat.completions.calls[0]["model"] == "llama-3.3-70b-versatile"
+    assert client.chat.completions.calls[0]["model"] == DEFAULT_MODEL
 
 
 def test_the_llm_client_falls_back_to_groq_when_no_base_url_is_set(monkeypatch):

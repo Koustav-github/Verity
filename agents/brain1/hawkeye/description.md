@@ -1,1 +1,0 @@
-This agent gets the model metadata and actual data. hyperparameters, how models are designed, what are the evals that can be run on them.

@@ -7,4 +7,7 @@ agent can be moved to a stronger model without touching the others.
 """
 
 DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
-DEFAULT_MODEL = "llama-3.3-70b-versatile"
+# Was llama-3.3-70b-versatile until Groq retired the Llama line (404 model_not_found).
+# Both agents need reliable JSON-mode output, which this handles well. If it disappears
+# too, `GET /openai/v1/models` lists what the key can actually reach.
+DEFAULT_MODEL = "openai/gpt-oss-120b"

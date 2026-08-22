@@ -1,39 +1,48 @@
 # Verity — Full Architecture & Workflow
 
-> Source analysed: `e:\Projects\Verity`, branch `main`, HEAD `9e825a3`. All file
-> references are relative to the repo root. Server test suite: 102 passing. SDK test
-> suite: 21 passing (`verity/tests/test_auth.py` deleted — it imported a module,
-> `verity.auth`, that never existed).
+> Source analysed: `e:\Projects\Verity`, branch `main`. All file references are relative
+> to the repo root. Server test suite: 132 passing. SDK test suite: 38 passing.
+>
+> This describes all four V1 agents as built. **api-fication** — Verity serving a promoted
+> version behind a generated endpoint — is designed but not yet built, so it appears below
+> only where an existing decision was made in anticipation of it. See
+> [`README.md`](../README.md#current-status) for that design's current state.
 
 ---
 
 ## 1. The one-paragraph version
 
-Verity is a **three-stage pipeline behind one HTTP endpoint**. A client SDK
+Verity is a **four-stage pipeline behind one HTTP endpoint**. A client SDK
 (`verity.assemble(model, name=..., user_id=..., X_test=..., y_test=...)`) cloudpickles a
 model, computes its own SHA-256, and POSTs multipart form data to `POST /ingest`. The
 server re-verifies that digest against the actual bytes (never trusts the client's claim),
-then runs three agents in sequence, each consuming only the previous one's output:
+then runs four agents in sequence, each consuming only the previous one's output:
 **Hawkeye** (an LLM call) infers the framework and task type from `repr(model)`; **Nat**
 picks task-appropriate metrics from a fixed taxonomy, runs `predict()` in a
 credential-scrubbed sandboxed subprocess, and scores the result against both quality and
 systemic (latency/memory/CPU/GPU) thresholds; **Fury** groups the upload into a named
 logical model, dedupes byte-identical repeats before any of the above runs, and — on a
-passing verdict — promotes straight to `production`, archiving whatever it replaces. Every
+passing verdict — promotes straight to `production`, archiving whatever it replaces; and
+**Falcon**, which needs no LLM at all, switches monitoring on for the promoted version by
+lifting its reference numbers straight out of the eval run that justified the promotion. Every
 agent is a pure function with every collaborator injected and a lazy real default, so the
 whole chain is testable with hand-written fakes and zero mocking.
+
+Two routes sit outside that chain: `POST /telemetry` accepts batched live traffic from
+`verity.monitor()`, and `GET /models/{id}/telemetry` summarises it.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Client        verity.assemble()  │  client/ (Next.js intake form)   │
+│                verity.monitor()   →  POST /telemetry                 │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Transport     multipart POST /ingest — artifact, sha256, name,      │
 │                user_id, args, optional fixture + fixture_descriptor  │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Server        FastAPI  main.py  →  orchestrator.build_artifact()    │
 ├──────────────────────────────────────────────────────────────────────┤
-│  Fury (dedup)     Hawkeye (LLM)      Nat (LLM + sandbox)   Fury (reg) │
-│  find_existing → identify() →  evaluate()  → register()              │
+│  Fury (dedup)   Hawkeye (LLM)   Nat (LLM + sandbox)   Fury   Falcon  │
+│  find_existing → identify() → evaluate() → register() → configure()  │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Sandbox       execution/sandbox.py → subprocess, scrubbed env       │
 ├──────────────────────────────────────────────────────────────────────┤
@@ -138,7 +147,7 @@ This exists because `sha256` decides three separate things downstream — the S3
 including its `status`*. A client that could claim someone else's digest while sending
 different bytes would be handed that other version's record, `production` status
 included, without the real bytes ever touching storage or evaluation. Added after a final
-whole-branch review caught it as a live gap — see §9.
+whole-branch review caught it as a live gap — see §10.
 
 ### 3.3 Dedup short-circuit — conditional on whether there's new evidence
 
@@ -155,7 +164,7 @@ The `if fixture_payload is None` guard is load-bearing, not incidental. Dedup on
 when there is *nothing new to evaluate* — a fixture-bearing upload always runs the full
 pipeline, even against an identical, already-registered hash+name, because otherwise the
 fixture the caller just attached would be silently discarded and the version permanently
-stranded at `pending`. (This was itself a bug caught and fixed in review; see §9.)
+stranded at `pending`. (This was itself a bug caught and fixed in review; see §10.)
 
 ### 3.4 The unsandboxed seam, named explicitly in comments
 
@@ -167,13 +176,15 @@ it as "data" or not, and both loads are named as belonging behind the sandboxed
 `python-exec` boundary that `predict()` itself already runs behind (§7). This is documented
 debt, not undocumented debt.
 
-### 3.5 The tail — one call each to Hawkeye, Nat, Fury
+### 3.5 The tail — one call each to Hawkeye, Nat, Fury, Falcon
 
 ```
 identify_fn(model)                                    → manifest
 save_model_version(status="pending") + save_manifest()
 if fixture: evaluate_fn(...)                          → eval_run  (§7)
-register_fn(..., verdict=eval_run["verdict"] or None) → registration  (§8)
+register_fn(..., verdict=eval_run["verdict"] or None) → registration  (§5)
+if registration["status"] == "production":
+    configure_fn(...)                                 → monitoring_config  (§8)
 return {status: registration["status"], model_id: registration["model_id"], ...}
 ```
 
@@ -257,8 +268,9 @@ verdict == "pass"  → find current production version (if any) → archive it
 ```
 
 A passing verdict goes **straight** to `production` — there is no intermediate `staging`
-resting state, unlike the schema originally specced (`Schemas.md` still lists `staging` in
-its status enum, annotated as presently unreachable). One production slot per model,
+resting state, unlike the schema originally specced. `staging` remains in the status enum and
+remains unwritten; the api-fication design deploys automatically on promotion, so no state
+exists in which a version has passed and is waiting for a human (`docs/Schemas.md`). One production slot per model,
 always: `find_production_version` + `archive_model_version` run before the new promotion,
 so "which version is live" never has more than one answer.
 
@@ -393,7 +405,90 @@ not a network call — the child imports nothing from `server` or `agents` (modu
 
 ---
 
-## 8. The frontend — `client/`
+## 8. Falcon — observability
+
+`agents/brain4/falcon/monitor.py` — **the only agent with no LLM call in it.** Everything
+Falcon does is derivable from rows that already exist, so reasoning about it would add
+nondeterminism and buy nothing.
+
+### 8.1 Why it needs no model
+
+When Fury promotes a version, `model_version.promoted_from` already points at the `eval_run`
+that justified the promotion, and that row already holds measured latency percentiles,
+throughput, peak memory, and quality scores. The reference is *lifted from evidence that
+already exists* rather than proposed. `configure()` is two dict comprehensions and an insert.
+
+### 8.2 The prefix split
+
+`build_eval_reference()` re-sorts the flat `eval_run.scores` dict using the same
+`RESOURCE_PREFIX` Nat namespaced it with (`agents/brain2/nat/score.py`):
+
+```python
+for key, value in (scores or {}).items():
+    if key.startswith(RESOURCE_PREFIX):
+        reference[key[len(RESOURCE_PREFIX):]] = value   # latency_p95_ms, peak_memory_mb, …
+    else:
+        reference["quality"][key] = value               # accuracy, f1, roc_auc, …
+```
+
+Resource metrics are hoisted to the top level because they are what monitoring watches;
+quality metrics are nested under `quality` because nothing at V1 can recompute them live —
+that needs labels, and production traffic doesn't come with any.
+
+### 8.3 The honesty constraint that shaped the design
+
+The reference carries `"basis": "sandbox_feasibility"`, and **V1 compares nothing and alerts
+on nothing.** Those numbers came from a single-process, single-client, cold sandbox; real
+latency under concurrency will be materially higher. A baseline that is wrong by construction,
+shipped with alerts attached, trains people to ignore alerts — which is worse than no alerting
+at all. The `basis` marker exists so V7's rule engine can tell what kind of number it is
+reading, and `client/src/components/telemetry-panel.tsx` renders the reference beside the live
+numbers as *context*: no comparison, no pass/fail colouring.
+
+This is the weakest point in the current design, and api-fication is what fixes it — once
+Verity serves the model itself, the proxy measures real production latency and the reference
+can be rebased on a number of the same kind as the one it is compared against.
+
+### 8.4 Telemetry must never be why inference fails
+
+`verity/src/verity/monitor.py` wraps the customer's model in a proxy. The governing rule is
+that the monitoring path can never degrade the thing it monitors, which shows up as four
+specific decisions:
+
+| Decision | Consequence |
+|---|---|
+| `put_nowait()` on a bounded queue | a full queue drops events and bumps a counter; it never blocks `predict()` |
+| HTTP runs on a background thread | the network never touches the predict path |
+| `_call` catches `BaseException`, records, then bare `raise` | the caller gets *their* exception with the original traceback, not a wrapped one |
+| `_record` wraps the reporter in `except Exception: pass` | a broken reporter cannot turn a working prediction into a failure |
+
+`object.__setattr__` sets `_model` / `_reporter` because the proxy defines `__getattr__`, and
+assigning normally would recurse into it.
+
+### 8.5 The non-fatal asymmetry with Fury
+
+`orchestrator._configure_monitoring()` swallows exceptions; `register_fn` does not. The two
+look inconsistent and are deliberately so:
+
+- Fury raising is **correct**. If registration fails, the promotion did not happen, and a 500
+  is the truth.
+- Falcon raising would be **wrong**. Falcon runs *after* the version is already `production`.
+  Failing the request would report a promotion as failed when it genuinely succeeded.
+
+The caller gets `monitoring_config: null` — visible rather than fabricated — and monitoring can
+be configured later. api-fication's deploy step inherits this same contract for the same
+reason.
+
+### 8.6 Summarisation is a pure function
+
+`server/telemetry.py:summarize()` turns a list of events into counts, error rate, and
+percentiles with no I/O and no database access, which is why it is testable with a list of
+dicts. Percentiles come from `numpy.percentile`. `truncated` is set when the row limit was
+reached, so a caller can distinguish "1000 events" from "at least 1000 events".
+
+---
+
+## 9. The frontend — `client/`
 
 Next.js 16 (App Router), a single client component (`client/src/app/page.tsx`) that talks
 **directly** to the FastAPI server — no proxy, no Next.js API route in between.
@@ -401,8 +496,8 @@ Next.js 16 (App Router), a single client component (`client/src/app/page.tsx`) t
 ```
 client/src/lib/verity.ts     sha256Hex() (Web Crypto) + ingest() — same wire format
                               as verity.client.assemble(), just from a browser
-client/src/components/       verdict-stamp.tsx, evidence-report.tsx — pure render,
-                              no logic
+client/src/components/       verdict-stamp.tsx, evidence-report.tsx,
+                              telemetry-panel.tsx — pure render, no logic
 client/public/demo/          a pre-baked model.pkl + fixture.pkl (generated once via
                               verity.serialize()/labeled_holdout(), so their bytes are
                               guaranteed to match what the real SDK would produce) —
@@ -413,7 +508,7 @@ Two backend gaps this surfaced and fixed, not just the UI itself: `server/main.p
 CORS configuration at all** (`main.py:26-31` adds it, scoped to `localhost:3000` — no auth
 exists yet, so this is intentionally not `allow_origins=["*"]`), and the root `.gitignore`'s
 bare `demo/` pattern was silently matching `client/public/demo/` too — the same *category*
-of bug as `verity/tests` being gitignored project-wide (§9), scoped to `/demo/` (root-anchored)
+of bug as `verity/tests` being gitignored project-wide (§10), scoped to `/demo/` (root-anchored)
 once found.
 
 Verified against the real backend, not just `next build`: a Node script replicating the
@@ -424,7 +519,7 @@ genuine server responses, not fixtures.
 
 ---
 
-## 9. Repo-hygiene bugs found by building the system, not by looking for them
+## 10. Repo-hygiene bugs found by building the system, not by looking for them
 
 Worth its own section because the pattern repeated twice, and both times the discovery
 mechanism was the same: doing real work surfaced a class of bug no amount of staring at the
@@ -455,7 +550,7 @@ on paper.
 
 ---
 
-## 10. End-to-end trace of one call
+## 11. End-to-end trace of one call
 
 `verity.assemble(model, user_id="u", name="fraud-classifier", X_test=X, y_test=y)`, model
 not previously seen, against a local server:
@@ -497,15 +592,31 @@ main.ingest()
            ├ link_model_version(model_version_id, model_id)
            ├ verdict == "pass" → find_production_version → None (first version)
            └ promote_model_version(...) → status "production"
-      return {status: "production", model_id: "mdl_...", eval_run: {...}, ...}
+      ├ status == "production" → _configure_monitoring(...)  [Falcon]
+      │    ├ build_eval_reference(scores) → resource.* hoisted, quality nested  (§8.2)
+      │    └ save_monitoring_config(...) → mcfg_...
+      return {status: "production", model_id: "mdl_...", eval_run: {...},
+              monitoring_config: {...}, ...}
 ```
 
 Two LLM calls total, both to the same Groq-compatible endpoint. Exactly one subprocess
-spawn. Everything else is in-process Python calling injected collaborators.
+spawn. Falcon adds neither: it reads the `eval_run` that was written three lines earlier.
+Everything else is in-process Python calling injected collaborators.
+
+Live traffic arrives separately and later, on its own route:
+
+```
+verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
+ └ model.predict(X)
+      ├ the real predict() runs and returns (or raises — unchanged, §8.4)
+      └ queue.put_nowait(event)          non-blocking; drops rather than waits
+           background thread, every flush_interval
+            └ POST /telemetry  {events: [...]}   → save_telemetry_events()
+```
 
 ---
 
-## 11. Extension points
+## 12. Extension points
 
 | Seam | Add by | Touches |
 |---|---|---|
@@ -518,32 +629,36 @@ spawn. Everything else is in-process Python calling injected collaborators.
 
 ---
 
-## 12. Repo map — where to look for what
+## 13. Repo map — where to look for what
 
 | Path | Contents |
 |---|---|
-| `server/main.py` | FastAPI app, CORS, the one route, DI wiring |
-| `server/orchestrator.py` | `build_artifact` — sequences all three agents |
+| `server/main.py` | FastAPI app, CORS, three routes (`/ingest`, `/telemetry`, `/models/{id}/telemetry`), DI wiring |
+| `server/orchestrator.py` | `build_artifact` — sequences all four agents |
+| `server/telemetry.py` | `summarize()` — pure function, no I/O (§8.6) |
 | `server/storage/models/` | `S3BlobStore`, `SupabaseMetadataStore` |
 | `server/execution/` | `sandbox.py` (parent), `runner.py` (child, standalone) |
-| `server/migrations/` | Alembic revisions — `model`, `model_version`, `manifest`, `eval_run` |
-| `server/tests/` | 102 tests, hand-written fakes, no `unittest.mock` |
+| `server/migrations/` | Alembic revisions — `model`, `model_version`, `manifest`, `eval_run`, `telemetry_event`, `monitoring_config` |
+| `server/tests/` | 132 tests, hand-written fakes, no `unittest.mock` |
 | `agents/provider.py` | shared LLM base URL / default model |
 | `agents/brain1/hawkeye/` | identification — one LLM call, one pydantic model |
 | `agents/brain2/nat/` | `evaluate.py` (orchestration), `resolve.py` (LLM), `score.py` (deterministic), `registry.py` + `mechanisms/` (dispatch) |
 | `agents/brain3/fury/` | `registry.py` — dedup, identity, promotion, archival |
-| `verity/src/verity/` | SDK — `client.py`, `transport.py`, `serialize.py`, `fixture.py`, `cli.py` |
-| `verity/tests/` | 21 tests, same conventions as `server/tests/` |
+| `agents/brain4/falcon/` | `monitor.py` — the LLM-free agent; reference lifted from `eval_run` |
+| `verity/src/verity/` | SDK — `client.py`, `transport.py`, `serialize.py`, `fixture.py`, `monitor.py`, `cli.py` |
+| `verity/tests/` | 38 tests, same conventions as `server/tests/` |
 | `client/src/app/page.tsx` | the intake form — the one client component |
 | `client/src/lib/verity.ts` | browser-side hashing + `/ingest` call |
 | `client/public/demo/` | pre-baked demo model + fixture |
-| `Schemas.md` | the data contract — status enum, table columns, MCP connection shape |
-| `Metrics.md` | the Atlas — task → metric taxonomy, transcribed into `resolve.py` |
-| `progression.md` | the running build log, entry per milestone |
+| `demo/serve/` | the hand-written Titanic ONNX service — reference for what api-fication generates |
+| `docs/Schemas.md` | the data contract — status enum, table columns, MCP connection shape |
+| `docs/Metrics.md` | the Atlas — task → metric taxonomy, transcribed into `resolve.py` |
+| `docs/progression.md` | the running build log, entry per milestone |
+| `docs/superpowers/specs/` | dated design specs, one per agent |
 
 ---
 
-## 13. Recurring design idioms
+## 14. Recurring design idioms
 
 1. **Pure functions, injected collaborators, lazy real defaults.** Every agent boundary
    (`identify_fn`, `evaluate_fn`, `find_existing_fn`, `register_fn`, `execute_fn`,
@@ -567,6 +682,11 @@ spawn. Everything else is in-process Python calling injected collaborators.
 7. **Systemic metrics are measured, not chosen.** Resource metrics are always eligible for
    a threshold regardless of what the LLM's `metric_set` says, because they're instrumented
    unconditionally by the sandbox — quality is negotiable per task, feasibility isn't.
-8. **Named risk over hidden safety.** Where something isn't solved — comparative promotion
+8. **Failure is fatal exactly where it changes the truth.** Fury raising 500s the request,
+   because if registration failed the promotion did not happen. Falcon raising is swallowed,
+   because it runs after the version is already `production` and failing there would report a
+   real success as a failure. The rule is not "be defensive" — it is "the response must match
+   what actually happened" (§8.5).
+9. **Named risk over hidden safety.** Where something isn't solved — comparative promotion
    gating, non-atomic multi-row registry writes — it's written down as an accepted,
    deliberate gap, not silently absent.

@@ -4,9 +4,13 @@
 
 Generate one API key for your organization, install the SDK, and Verity automates
 everything between a trained model and a monitored production service: it evaluates the
-model at staging, gates promotion on the results, registers the version that passes, and
-switches on monitoring the moment it serves live traffic. Your model deploys wherever you
-want — any cloud, any vendor, on-prem — and an agent reports back.
+model, gates promotion on the results, registers the version that passes, stands it up
+behind a callable endpoint, and switches on monitoring the moment it serves live traffic.
+
+Verity serves the promoted version itself — one container per version, with the request
+schema derived from the model rather than hand-written. If you'd rather host the model in
+your own environment, the SDK wraps it and reports telemetry back: the same monitoring,
+without the serving.
 
 Every one of those stages already exists as a separate product: a registry here, an eval
 harness there, an observability dashboard somewhere else, and a pile of glue code holding
@@ -22,27 +26,65 @@ five minutes.
 
 ## Current status
 
-V1's loop is three-quarters built. Hawkeye (identification), Nat (evaluation), and Fury
-(registry) are implemented, tested (101 server tests + 21 SDK tests, TDD throughout), and
-verified live against real infrastructure — AWS S3, Supabase, and Groq as the LLM provider.
-One call, `verity.assemble(model, name=..., user_id=..., X_test=..., y_test=...)`, now runs
-the whole chain: identify the framework and task, evaluate against a labeled holdout with
-quality and systemic metrics (latency, memory, CPU, GPU) gating equally, and — on a pass —
-promote straight to `production`, archiving whatever version it replaces.
+All four V1 agents are built. Hawkeye (identification), Nat (evaluation), Fury (registry),
+and Falcon (observability) are implemented and tested — 132 server tests + 38 SDK tests, TDD
+throughout. One call, `verity.assemble(model, name=..., user_id=..., X_test=..., y_test=...)`,
+runs the whole chain: identify the framework and task, evaluate against a labeled holdout with
+quality and systemic metrics (latency, memory, CPU, GPU) gating equally, promote straight to
+`production` on a pass while archiving whatever version it replaces, and switch monitoring on
+for the promoted version. `verity.monitor(model, model_version_id=...)` then reports live
+traffic back from wherever the customer serves the model.
 
-Falcon (observability) and api-fication (actually serving a `production` model) don't exist
-yet, so "monitored production service" isn't true end-to-end — nothing currently answers a
-real inference request for a promoted model.
+All four are verified live end-to-end against real infrastructure — AWS S3, Supabase, and
+Groq — not just against unit tests.
+
+**Scope, deliberately narrow: tabular / classical ML** — scikit-learn, XGBoost, LightGBM. That
+one class gets finished end to end, api-fication and drift metrics included, before a second is
+started. Deep learning, LLM/RAG, and RL each widen the model-class axis later (V3–V5 below) and
+each brings its own metric set; none of them is being half-built now.
+
+**api-fication — standing a promoted version up behind a callable endpoint — is designed and
+not yet built.** The shape is settled: one container image per promoted version, built from the
+training environment the SDK captures at upload time, with the request schema derived from the
+model's own introspected surface rather than hand-written. Deploy fires automatically when Fury
+promotes, and Verity proxies `/models/{name}/predict` to the live container. That proxy is also
+the first point at which Verity sees production *inputs* at all — which is what makes drift
+detection possible, and why it comes before the drift metrics rather than after. Until it lands,
+the customer serves the model themselves and the SDK reports telemetry back.
+
+Also missing: alerting. Falcon collects and exposes telemetry but compares nothing and fires
+nothing, because the only baseline available today is a cold-sandbox feasibility figure rather
+than a production one — shipping a comparison against it would just train people to ignore the
+alerts. Alerting is V7, and the monitoring config Falcon writes is what V7's rule engine will
+consume.
 
 `verity/`'s original interrogation-pipeline eval engine (faithfulness / answer-relevance /
 context-relevance) was deleted before this build started; `verity/` is now the client SDK
 only, and an active part of the build rather than a finished component waiting on it.
 
 `client/` has a minimal intake form for exercising the loop by hand — upload a model
-(bundled demo included, no Python required) and watch Hawkeye, Nat, and Fury's real
-output render. It's a test harness, not a dashboard: there's no view of a model once
-registered. `demo/` still holds the sklearn/ONNX Titanic model used as the first real
-V1 test subject. Full detail on what's built and how it behaves lives in `progression.md`.
+(bundled demo included, no Python required) and watch all four agents' real output render,
+including a live-traffic panel for a monitored version. It's a test harness, not a dashboard:
+you can see the model you just uploaded, not browse ones you uploaded before. `demo/serve/`
+holds the hand-written Titanic ONNX service used as the first real V1 test subject — the
+template api-fication generates from, kept as the reference for what "correct" looks like.
+
+## Repo layout
+
+| Path | Contents |
+|---|---|
+| `agents/` | the four brains — `brain1/hawkeye`, `brain2/nat`, `brain3/fury`, `brain4/falcon` |
+| `server/` | FastAPI app, orchestrator, storage adapters, sandbox, Alembic migrations |
+| `verity/` | the client SDK (`assemble`, `monitor`, CLI) |
+| `client/` | Next.js intake form for exercising the loop by hand |
+| `demo/serve/` | the hand-written reference service |
+| `docs/` | [architecture](docs/architecture.md) · [Schemas](docs/Schemas.md) · [Metrics](docs/Metrics.md) · [progression](docs/progression.md) |
+| `docs/superpowers/` | dated design specs and implementation plans, one pair per agent |
+| `docs/reference/` | study notes on other systems ([MLflow](docs/reference/mlflow.md)) |
+
+[`docs/architecture.md`](docs/architecture.md) is the deep read — how the pieces actually fit
+together. [`docs/progression.md`](docs/progression.md) is the build log: what shipped, in what
+order, and what each step got wrong on the way.
 
 ---
 
@@ -59,33 +101,51 @@ thesis. Every version after V1 widens exactly one axis:
 | Platform | local process → container → orchestrator |
 | Agent depth | detect → decide → act → remediate |
 
-Full table schemas and the MCP connection contract live in [`Schemas.md`](Schemas.md);
+Full table schemas and the MCP connection contract live in [`Schemas.md`](docs/Schemas.md);
 each version below names only the tables and connections it *adds*.
 
-### V1 — The Loop (ML, local)
-**Goal:** "One sklearn model goes from artifact to monitored without being touched by hand."
+### V1 — The Loop (tabular ML)
+**Goal:** "One sklearn model goes from artifact to monitored production endpoint without being
+touched by hand."
 
-All four agents, shallow, single path. No multi-tenancy, no dashboard, no alerting.
+All four agents, shallow, single path. Tabular / classical ML only — scikit-learn, XGBoost,
+LightGBM. No multi-tenancy, no dashboard, no alerting.
 
-| Agent | Scope at V1 |
+| Stage | Scope at V1 |
 |---|---|
-| Hawkeye | sklearn / ONNX artifact → `model_manifest.json`; flags unrecoverable semantics |
-| Nat | Atlas lookup → metric set; labeled-holdout eval; pass/fail gate |
-| Fury | content-hash version identity; a passing verdict promotes straight to production |
-| Falcon | in-process SDK; request count, latency percentiles, error rate |
+| Hawkeye | sklearn / XGBoost / LightGBM / ONNX artifact → manifest; introspects the input surface; flags unrecoverable semantics |
+| Nat | Atlas lookup → metric set; labeled-holdout eval; quality and systemic metrics gate equally |
+| Fury | `name` + content-hash version identity; a passing verdict promotes straight to production |
+| *serving* | one container image per promoted version; request schema generated from the manifest; Verity proxies `/predict` |
+| Falcon | request count, latency percentiles, error rate — from the proxy when Verity serves, from the SDK when the customer does |
+
+Serving is not a fifth agent. It is generated pipeline, triggered by promotion — see
+[agents configure, pipelines execute](#the-design-principle-agents-configure-pipelines-execute).
 
 ```
-artifact → Hawkeye → manifest → Nat → eval_report → Fury → registered version
-                                                              ↓
-                                              Falcon → monitoring config → telemetry
+artifact → Hawkeye → manifest → Nat → eval_run → Fury → registered version
+                                                             │ promoted
+                                              ┌──────────────┴──────────────┐
+                                              ▼                             ▼
+                                     container image             Falcon → monitoring config
+                                              │                             ▲
+                                              ▼                             │
+                                      live endpoint ─────── telemetry ──────┘
 ```
 
 - **MCP:** `filesystem` (read artifact) · `python-exec` (run eval in a sandbox)
-- **Stores:** relational (metadata)
-- **Tables:** `model` · `model_version` · `manifest` · `eval_run` · `agent_run` · `telemetry_event`
-- **Components:** agent orchestrator · manifest generator · metric resolver · eval runner · registry service · ingestion endpoint · SDK
+- **Stores:** relational (metadata) · object store (artifacts)
+- **Tables:** `model` · `model_version` · `manifest` · `eval_run` · `monitoring_config` · `deployment` · `telemetry_event` · `agent_run`
+- **Components:** agent orchestrator · manifest generator · metric resolver · eval runner · scoring engine · registry service · image builder · container runtime · inference proxy · ingestion endpoint · SDK
 
-**Deliverable:** point Verity at a `.joblib` and get back a registered, monitored model.
+**Deliverable:** hand Verity a trained estimator and get back a registered, served, monitored
+model — with a URL you can POST to.
+
+> **Axis note, stated rather than hidden:** the axis table at the top of this roadmap puts
+> `local process → container` on the platform axis, implying containers arrive after V1. api-fication moves V1's *serving* onto
+> containers early, because running customer pickles in Verity's own process was never an
+> acceptable resting state. The orchestrator step (k8s, sidecars, cross-OS agents) is genuinely
+> still V6; only the container step comes forward.
 
 ### V1.5 — Multi-tenant foundation
 **Goal:** "More than one developer, more than one model."
@@ -166,7 +226,8 @@ reward, success rate, and trajectory correctness over N episodes.
 - Kubernetes operator / DaemonSet deployment
 - Cross-OS agent packaging (Windows · macOS · Linux)
 
-- **Tables:** `deployment` · `agent_heartbeat` · `platform_target`
+- **Tables:** `agent_heartbeat` · `platform_target` (`deployment` already exists — api-fication
+  created it at V1; V6 adds the columns that describe *which* target a deployment runs on)
 - **Components:** sidecar collector · k8s operator · cross-OS installer
 
 ### V7 — Alerting + remediation
@@ -211,6 +272,9 @@ Each gets decided when the version that needs it is built.
 | Eval runner | Executes eval jobs next to the model; returns raw outputs | V1 |
 | Scoring engine | Turns raw outputs into scores server-side | V1 |
 | Registry service | Version identity, lineage, promotion gating | V1 |
+| Image builder | Renders a Dockerfile + pinned requirements from the manifest; builds one image per promoted version | V1 |
+| Container runtime | Starts, health-checks, and stops serving containers — local Docker at V1, a cloud runner later behind the same interface | V1 |
+| Inference proxy | Public `/predict` surface; routes by model name to the live container and records every request as telemetry | V1 |
 | Ingestion endpoint | Receives production telemetry from deployed agents | V1 |
 | SDK / agent | Runs in the customer's environment; eval jobs + telemetry | V1 |
 | API server | Public HTTP surface | V1 |
@@ -230,8 +294,8 @@ Each gets decided when the version that needs it is built.
 
 ## If picking a single public MVP
 
-> "One API key. Deploy your model anywhere. Verity evaluates it at staging, promotes it
-> when it passes, and monitors it in production — automatically, in under five minutes."
+> "One API key. Hand Verity a trained model and get back a monitored endpoint — evaluated,
+> gated, served, and watched, automatically, in under five minutes."
 
 Focused enough to build in a few months; broad enough to grow into a full deployment-and-
 monitoring automation platform.
@@ -263,9 +327,11 @@ type, input schema, dtypes, output semantics. Everything downstream keys off thi
 worth watching.
 
 **2. Evaluation** — selects metrics appropriate to the inferred task, assembles or requests
-a test set, runs the model against it at staging, and scores the result. The task → metric
+a test set, runs the model against it in an isolated sandbox, and scores the result. The
+systemic side of that run — latency, memory, CPU — is measured rather than chosen, and gates
+promotion exactly as the quality metrics do. The task → metric
 mapping is not invented per run; it is a lookup against the taxonomy in
-[`Metrics.md`](Metrics.md), which is the agent's decision table. Classification resolves to
+[`Metrics.md`](docs/Metrics.md), which is the agent's decision table. Classification resolves to
 accuracy / precision / recall / ROC-AUC; RAG resolves to context precision / faithfulness /
 answer relevance; a forecasting model resolves to MAPE / SMAPE / MASE.
 
@@ -275,21 +341,29 @@ model that passes moves to production; one that fails stays put with a report na
 metric that stopped it. Promotion is a consequence of evidence, not a button someone
 remembers to press.
 
-**4. Observability** — configures monitoring for the now-live model: which metrics to
-collect, what the healthy baseline looks like (derived from the training distribution
-rather than guessed), where thresholds sit, and which alerts fire. Monitoring switches on
-with the deployment instead of being a follow-up task that never gets done.
+**4. Observability** — configures monitoring for the now-live model: which metrics to collect,
+what reference numbers to carry, and eventually where thresholds sit and which alerts fire. The
+reference is lifted from the eval run that justified promotion — measured evidence that already
+exists, not a guess — and is tagged with what kind of measurement it was, so nothing downstream
+mistakes a cold-sandbox figure for a production baseline. Monitoring switches on with the
+deployment instead of being a follow-up task that never gets done.
+
+Between registry and observability sits **serving**, which is not an agent: promotion generates
+a container and an API for the version that passed, and the generated config is reviewable like
+any other pipeline output.
 
 ```
 Trained model
      |
-Identification  →  framework · task · schema
+Identification  →  framework · task · input schema
      |
-Evaluation      →  task-appropriate metrics · staging run · scores
+Evaluation      →  task-appropriate metrics · eval run · scores
      |
 Registry        →  version · lineage · gate → promote or hold
      |
-Observability   →  metric set · baselines · thresholds · alerts
+Serving         →  generated API · container per version · live endpoint
+     |
+Observability   →  metric set · references · thresholds · alerts
      |
 Monitored production model
 ```
@@ -324,7 +398,7 @@ decision is reconstructible from rows rather than by re-running an agent and hop
 reasons the same way twice.
 
 The connection contract, scope model, and per-agent tool matrix are specified in
-[`Schemas.md`](Schemas.md#mcp-connection-contract).
+[`Schemas.md`](docs/Schemas.md#mcp-connection-contract).
 
 ## Where this leaves the roadmap
 

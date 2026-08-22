@@ -166,7 +166,12 @@ def test_resolve_defaults_to_the_configured_groq_model(monkeypatch):
         client=client,
     )
 
-    assert client.chat.completions.calls[0]["model"] == "llama-3.3-70b-versatile"
+    # Asserts against the shared constant, not a literal — see the matching note in
+    # test_hawkeye_identify.py. The test pins "the provider default is used", not which
+    # model that happens to be this month.
+    from agents.provider import DEFAULT_MODEL
+
+    assert client.chat.completions.calls[0]["model"] == DEFAULT_MODEL
 
 
 def test_resolve_rejects_a_plan_with_an_unusable_comparison_operator():

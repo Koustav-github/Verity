@@ -1,21 +1,33 @@
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 build/
 dist/
+.pytest_cache/
+
 # Secrets — never commit
 .env
 .env.*
 .env.test
 *.env
 
-# Generated eval artifacts
-eval_set.jsonl
+# Demo. The serving code under demo/serve/ *is* tracked: it is the only working
+# model-serving code in the repo and the template api-fication builds from. The dataset,
+# the notebooks, and the local MLflow scratch DB are not.
+#
+# Scoped to the root (a bare "demo/" also matched client/public/demo/, which holds
+# committed static assets for the frontend's demo flow).
+/demo/*
+!/demo/serve/
+/demo/serve/*
+!/demo/serve/Dockerfile
+!/demo/serve/app.py
+!/demo/serve/requirements.txt
+!/demo/serve/model.onnx
 
-# Test model (root-level only — a bare "demo/" also matched client/public/demo/,
-# which holds committed static assets for the frontend's demo flow)
-/demo/
+# Editor / tooling
 .vscode/
 
 # Subagent-driven-development scratch workspace (ledgers, briefs, review packages)

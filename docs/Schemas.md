@@ -1,7 +1,7 @@
 # Schemas
 
 Data model and MCP connection contract for the agentic pipeline. Tables are grouped by the
-version that introduces them — see [`README.md`](README.md#roadmap) for the version carve.
+version that introduces them — see [`README.md`](../README.md#roadmap) for the version carve.
 
 Types are written generically (`text`, `jsonb`, `timestamptz`, `bigint`). Engine choice is
 deliberately unpinned.
@@ -62,32 +62,55 @@ unchanged artifact dedupes; any byte change is inherently a new version.
 `promoted_from` is the important one: promotion is a *consequence of evidence*, and the row
 records which evidence. A production version with a null `promoted_from` is an incident.
 
-`staging` is presently unreachable: the shipped Fury pipeline evaluates a version and, on a
-passing verdict, promotes it straight from `pending` to `production` — there is no
-intermediate stop. The `staging` state is pending api-fication (a review/approval step
-between eval and promotion), per the design spec.
+`staging` is unreachable, and **stays** unreachable. The shipped Fury pipeline evaluates a
+version and, on a passing verdict, promotes it straight from `pending` to `production` with no
+intermediate stop.
+
+An earlier revision of this file predicted that api-fication would make `staging` real by
+inserting a review/approval step between eval and promotion. That prediction was wrong: the
+settled design deploys automatically on promotion, so there is no state in which a version has
+passed but is waiting for a human. The value is left in the enum rather than dropped because a
+V1.5 approval gate is a plausible thing to want once there is more than one developer — but
+nothing writes it today, and nothing is planned to before then.
 
 ### `manifest`
 Hawkeye's output. Append-only.
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | text PK | `mf_…` |
-| `model_version_id` | text FK | |
-| `framework` | text | `sklearn` · `pytorch` · `onnx` · … |
-| `detected_via` | text | the signal used, e.g. `onnx.producer_name` |
-| `io_schema` | jsonb | inputs/outputs, shapes, dtypes, roles |
-| `serving_pattern` | text | `in_process` · `http_endpoint` · `container` |
-| `platform` | text | `windows` · `macos` · `linux` · `docker` · `k8s` |
-| `confidence` | jsonb | per-field confidence scores |
-| `review_required` | jsonb | fields Hawkeye could not resolve, and what they block |
-| `declared_overrides` | jsonb | human/lineage-supplied values filling those gaps |
+| Column | Type | Built? | Notes |
+|---|---|---|---|
+| `id` | text PK | ✅ | `mf_…` |
+| `model_version_id` | text FK | ✅ | |
+| `framework` | text | ✅ | `sklearn` · `xgboost` · `lightgbm` · `onnx` · … |
+| `detected_via` | text | ✅ | the signal used, e.g. `onnx.producer_name` |
+| `model_class` | text | ✅ | the estimator class name, e.g. `LogisticRegression` |
+| `hyperparameters` | jsonb | ✅ | whatever was visible in the artifact |
+| `task_type` | text | ✅ | coarse only — `classification` · `regression` · … |
+| `created_at` | timestamptz | ✅ | |
+| `io_schema` | jsonb | ⬜ | inputs/outputs, shapes, dtypes, roles |
+| `serving_pattern` | text | ⬜ | `in_process` · `http_endpoint` · `container` |
+| `platform` | text | ⬜ | `windows` · `macos` · `linux` · `docker` · `k8s` |
+| `confidence` | jsonb | ⬜ | per-field confidence scores |
+| `review_required` | jsonb | ⬜ | fields Hawkeye could not resolve, and what they block |
+| `declared_overrides` | jsonb | ⬜ | human/lineage-supplied values filling those gaps |
 
-`review_required` and `declared_overrides` are the honest core of this table. Hawkeye can
-read an ONNX graph's *shape* but not its *semantics* — six anonymous float inputs, with no
-way to know column three is `Sex` where `0 = male`. Anything it can't recover gets flagged
-rather than guessed, and the override that fills it is recorded separately so detected and
-declared never blur together.
+The ⬜ rows are specced here and **not in the table** — `90fc6eeb5714_create_manifest_table.py`
+created six columns, and `a1c4e7b90d33` added `task_type`. Nothing has needed the rest yet.
+
+api-fication is what needs `io_schema` and `serving_pattern`, and it is worth being precise
+about where each field comes from, because they have different trust levels:
+
+| Field | Source | Why there |
+|---|---|---|
+| `n_features`, `feature_names`, `classes`, `has_predict_proba` | sandbox introspection of the artifact | read off the fitted estimator; deterministic, no LLM |
+| training environment (`sklearn`, `numpy`, `python` versions) | **captured client-side by the SDK at `assemble()`** | must be client-side — introspecting on the server would report the *server's* versions, which is exactly the wrong answer for a pickle |
+| `serving_pattern` | set to `container` when a version deploys | a record of what happened, not a prediction |
+
+`review_required` and `declared_overrides` remain the honest core of the design, whenever they
+land. Hawkeye can read an ONNX graph's *shape* but not its *semantics* — six anonymous float
+inputs, with no way to know column three is `Sex` where `0 = male`. Anything it can't recover
+should be flagged rather than guessed, and the override that fills it recorded separately so
+detected and declared never blur together. This is also the ceiling on what a generated
+`/predict` schema can promise: names and arity, not meaning.
 
 ### `eval_run`
 Nat's output. Append-only.
@@ -135,6 +158,58 @@ outgrows it.
 | `status` | text | `ok` · `error` · `timeout` |
 | `inputs` / `prediction` | jsonb | sampled, not necessarily every request |
 | `error_type` | text | |
+
+`inputs` and `prediction` are created but **not written at V1**. They exist to support drift
+detection, which is V7; the V1 metric set — request count, latency percentiles, error rate —
+needs neither. Leaving them null removes the entire sampling-policy question at V1 (no rate to
+configure, no config for the SDK to fetch before it can start) and costs nothing V1 promises.
+V7 adds a writer rather than a migration.
+
+### `monitoring_config`
+Falcon's output — written when a version reaches `production`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | text PK | `mcfg_…` |
+| `model_version_id` | text FK → `model_version` | |
+| `eval_run_id` | text FK → `eval_run` | provenance: which eval the reference came from |
+| `metrics` | jsonb | metric names to collect; fixed at V1 |
+| `eval_reference` | jsonb | eval-time measured values, carrying `"basis": "sandbox_feasibility"` |
+| `created_at` | timestamptz | |
+
+`eval_reference` is a **feasibility reference, not a production baseline**. Its numbers are
+lifted from the `eval_run` that promoted the version, which measured them in a single-process,
+single-client, cold sandbox — production latency under real concurrency will be materially
+higher. Nothing in V1 compares against it; the `basis` marker exists so V7's rule engine can
+tell what kind of number it is reading.
+
+### `deployment`
+Where a promoted version actually runs. **Designed, not yet built** — this is api-fication's
+table, listed under V6 in earlier drafts of this file and pulled forward because V1 serves.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | text PK | `dep_…` |
+| `model_version_id` | text FK → `model_version` | |
+| `image_tag` | text | the built image; identifies the exact environment serving this version |
+| `container_id` | text | runtime handle; null while `building` or if the build failed |
+| `host_port` | integer | ephemeral, assigned by the runtime and read back — not from a registry |
+| `endpoint_url` | text | where the proxy forwards to |
+| `status` | text | `building` · `live` · `failed` · `stopped` |
+| `error` | jsonb | why a `failed` deployment failed; null otherwise |
+| `created_at` | timestamptz | |
+| `stopped_at` | timestamptz | set when the version is archived and its container torn down |
+
+Append-only in spirit, with two mutable fields: `status` and `stopped_at`. A version that is
+promoted, replaced, and re-promoted gets a *new* row each time — the history of what served
+when is worth keeping, and re-using a row would erase it.
+
+`error` exists for the same reason `eval_run.error` does: a deploy can fail for reasons that
+aren't a metric missing a threshold (image build failure, dependency resolution, a pickle that
+loads in the training environment but not the built one), and those reasons belong on record
+rather than in a log line. Deployment failure is deliberately **non-fatal** to the promotion
+that triggered it — the version is already `production` by then, and a build failure must not
+retroactively 500 a promotion that genuinely succeeded. It leaves a `failed` row instead.
 
 ---
 
@@ -283,7 +358,7 @@ Detailed once the version is designed; listed here so the shape is visible.
 | V3 (DL) | `artifact_pointer` · `resource_sample` | External custody for large weights; GPU/memory telemetry |
 | V4 (LLM/RAG) | `prompt_version` · `index_snapshot` · `eval_example` · `trace_span` | Version identity becomes prompt + index, not weights |
 | V5 (RL/Agentic) | `environment` · `episode` · `trajectory` · `tool_invocation` | Rollout-based eval; a policy is meaningless without a pinned environment |
-| V6 (Platform) | `deployment` · `agent_heartbeat` · `platform_target` | Where a version actually runs, and whether its agent is alive |
+| V6 (Platform) | `agent_heartbeat` · `platform_target` | Which *target* a deployment runs on, and whether its agent is alive. `deployment` itself moved to V1 with api-fication |
 | V7 (Alerting) | `alert_rule` · `alert_event` · `recommendation` · `experiment` | Thresholds, firing history, retraining candidates |
 | V8 (Enterprise) | `role` · `permission` · `sso_config` · `agent_decision_log` | RBAC and a defensible record of every agent decision |
 
@@ -299,3 +374,8 @@ Detailed once the version is designed; listed here so the shape is visible.
   sets or only references customer-held ones is a data-residency question that lands well
   before V8.
 - **Telemetry retention and sampling rate** — unspecified until V3 gives it a real store.
+- **Whether `manifest.declared_overrides` can reach the generated serving schema.** api-fication
+  derives `/predict`'s request shape from introspected names and arity. If a human declares that
+  column three is `Sex` with `0 = male`, that semantic belongs in the generated API's validation
+  — but nothing currently carries a declaration from the manifest into the built image, and the
+  two would have to stay in sync across redeploys.

@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Verity client
 
-## Getting Started
+A minimal intake form for exercising the pipeline by hand. Upload a model, watch all four
+agents' real output render.
 
-First, run the development server:
+**This is a test harness, not a dashboard.** It shows the result of the upload you just made;
+it cannot browse models you uploaded before, because no read endpoint exists server-side yet.
+
+## Running
+
+The server must be running on `http://localhost:8000` first (see [`../server/README.md`](../server/README.md)) —
+the browser calls it directly, with no Next.js API route in between. CORS on the server is
+scoped to `localhost:3000`, so use that port.
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open http://localhost:3000. The **Bundled demo model** option (selected by default) loads
+a pre-baked model + fixture from `public/demo/`, so the whole Hawkeye → Nat → Fury → Falcon
+loop runs without Python involved at all.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Path | What it is |
+|---|---|
+| `src/app/page.tsx` | the intake form — the only stateful component |
+| `src/lib/verity.ts` | `sha256Hex()` (Web Crypto) + `ingest()` — the same wire format `verity.assemble()` uses |
+| `src/components/` | `verdict-stamp.tsx`, `evidence-report.tsx`, `telemetry-panel.tsx` — pure render, no logic |
+| `public/demo/` | a model and fixture generated once through the real SDK, so their bytes match what a genuine upload produces |
 
-## Learn More
+The client computes SHA-256 in the browser because the server re-verifies the digest against
+the actual bytes it received. The frontend gets no more latitude to send a stale or wrong hash
+than the CLI does.
 
-To learn more about Next.js, take a look at the following resources:
+## Next.js
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This is Next.js 16 with the App Router, and it has breaking changes relative to most training
+data and tutorials — see [`AGENTS.md`](AGENTS.md). Read `node_modules/next/dist/docs/` before
+reaching for a remembered API.

@@ -48,6 +48,7 @@ export type IngestResult = {
   model_id?: string;
   deduplicated?: boolean;
   archived_model_version_id?: string | null;
+  monitoring_config?: { id: string; metrics: string[] } | null;
 };
 
 export class IngestError extends Error {
@@ -104,5 +105,29 @@ export async function ingest(options: {
     throw new IngestError(`Server rejected the upload (${response.status}).`, detail);
   }
 
+  return response.json();
+}
+
+export type TelemetrySummary = {
+  model_version_id: string;
+  hours: number;
+  request_count: number;
+  error_rate: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  latency_p99_ms: number | null;
+  truncated: boolean;
+  eval_reference: Record<string, unknown> | null;
+};
+
+export async function fetchTelemetry(
+  modelVersionId: string,
+): Promise<TelemetrySummary> {
+  const response = await fetch(
+    `${API_BASE}/models/${encodeURIComponent(modelVersionId)}/telemetry`,
+  );
+  if (!response.ok) {
+    throw new IngestError(`Couldn't read telemetry (${response.status}).`);
+  }
   return response.json();
 }
