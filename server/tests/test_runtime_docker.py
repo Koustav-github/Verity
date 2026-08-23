@@ -162,3 +162,109 @@ def _installed(distribution):
     from importlib.metadata import version
 
     return version(distribution)
+
+
+from serving.runtime import FargateRuntime
+
+ECR_REPO = "504509954111.dkr.ecr.us-east-1.amazonaws.com/verity/verity-model"
+
+
+class FakeDockerRuntimeForFargate:
+    """Stands in for the DockerRuntime FargateRuntime delegates local builds to."""
+
+    def __init__(self):
+        self.built = []
+        self.client = FakeDockerClientForPush()
+
+    def build(self, *, context_dir, tag):
+        self.built.append({"context_dir": context_dir, "tag": tag})
+
+
+class FakeDockerClientForPush:
+    def __init__(self):
+        self.login_calls = []
+        self.tag_calls = []
+        self.push_calls = []
+        self.images = self
+
+    def login(self, **kwargs):
+        self.login_calls.append(kwargs)
+
+    def get(self, tag):
+        return FakeImageForPush(self)
+
+    def push(self, repository, tag=None):
+        self.push_calls.append({"repository": repository, "tag": tag})
+
+
+class FakeImageForPush:
+    def __init__(self, client):
+        self._client = client
+
+    def tag(self, repository, tag):
+        self._client.tag_calls.append({"repository": repository, "tag": tag})
+
+
+class FakeEcrClient:
+    def __init__(self):
+        import base64
+
+        token = base64.b64encode(b"AWS:fake-password").decode()
+        self._token = token
+
+    def get_authorization_token(self):
+        return {
+            "authorizationData": [
+                {
+                    "authorizationToken": self._token,
+                    "proxyEndpoint": "https://504509954111.dkr.ecr.us-east-1.amazonaws.com",
+                }
+            ]
+        }
+
+
+def _fargate_runtime(docker_runtime=None, ecr_client=None):
+    return FargateRuntime(
+        region="us-east-1",
+        cluster="verity-cluster",
+        ecr_repository_uri=ECR_REPO,
+        execution_role_arn="arn:aws:iam::504509954111:role/verity-ecs-task-execution-role",
+        subnets=["subnet-a", "subnet-b"],
+        security_group="sg-abc",
+        log_group="/ecs/verity-model",
+        docker_runtime=docker_runtime or FakeDockerRuntimeForFargate(),
+        ecs_client=object(),  # unused by build()
+        ecr_client=ecr_client or FakeEcrClient(),
+        ec2_client=object(),  # unused by build()
+    )
+
+
+def test_fargate_build_delegates_the_local_build_to_docker_runtime():
+    docker_runtime = FakeDockerRuntimeForFargate()
+    runtime = _fargate_runtime(docker_runtime=docker_runtime)
+
+    runtime.build(context_dir="/tmp/ctx", tag="verity-model:mv_1")
+
+    assert docker_runtime.built == [{"context_dir": "/tmp/ctx", "tag": "verity-model:mv_1"}]
+
+
+def test_fargate_build_logs_in_to_ecr_using_the_real_authorization_token():
+    docker_runtime = FakeDockerRuntimeForFargate()
+    runtime = _fargate_runtime(docker_runtime=docker_runtime)
+
+    runtime.build(context_dir="/tmp/ctx", tag="verity-model:mv_1")
+
+    login = docker_runtime.client.login_calls[0]
+    assert login["username"] == "AWS"
+    assert login["password"] == "fake-password"
+    assert login["registry"] == "https://504509954111.dkr.ecr.us-east-1.amazonaws.com"
+
+
+def test_fargate_build_tags_and_pushes_the_image_under_the_ecr_uri():
+    docker_runtime = FakeDockerRuntimeForFargate()
+    runtime = _fargate_runtime(docker_runtime=docker_runtime)
+
+    runtime.build(context_dir="/tmp/ctx", tag="verity-model:mv_1")
+
+    assert docker_runtime.client.tag_calls == [{"repository": ECR_REPO, "tag": "mv_1"}]
+    assert docker_runtime.client.push_calls == [{"repository": ECR_REPO, "tag": "mv_1"}]
