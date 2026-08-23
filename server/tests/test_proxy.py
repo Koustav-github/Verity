@@ -197,3 +197,43 @@ def test_stop_drains_whatever_is_still_queued():
     sink.stop()
 
     assert store.batches and store.batches[-1][0]["model_version_id"] == "mv_1"
+
+
+def test_flush_calls_detect_fn_once_per_distinct_model_version_in_the_batch():
+    store = RecordingStore()
+    calls = []
+    sink = TelemetrySink(
+        metadata_store=store, maxsize=10, flush_interval=3600,
+        detect_fn=lambda model_version_id: calls.append(model_version_id),
+    )
+    sink.record({"model_version_id": "mv_1"})
+    sink.record({"model_version_id": "mv_1"})
+    sink.record({"model_version_id": "mv_2"})
+
+    sink.flush()
+
+    assert sorted(calls) == ["mv_1", "mv_2"]
+
+
+def test_a_raising_detect_fn_does_not_stop_flush_from_returning_its_count():
+    store = RecordingStore()
+
+    def boom(model_version_id):
+        raise RuntimeError("detection is broken")
+
+    sink = TelemetrySink(metadata_store=store, maxsize=10, flush_interval=3600, detect_fn=boom)
+    sink.record({"model_version_id": "mv_1"})
+
+    assert sink.flush() == 1  # the save succeeded; detection failing must not undo that
+
+
+def test_flush_with_no_events_never_calls_detect_fn():
+    calls = []
+    sink = TelemetrySink(
+        metadata_store=RecordingStore(), maxsize=10, flush_interval=3600,
+        detect_fn=lambda model_version_id: calls.append(model_version_id),
+    )
+
+    sink.flush()
+
+    assert calls == []

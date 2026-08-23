@@ -358,3 +358,30 @@ def test_ingest_accepts_an_upload_from_an_sdk_that_captures_no_environment():
     # Older SDKs predate environment capture; the image then falls back to a default
     # Python and an empty pin set, which is worse but must not be fatal.
     assert captured["environment"] is None
+
+
+def test_ingest_telemetry_calls_check_systemic_for_each_distinct_model_version():
+    import main
+
+    calls = []
+
+    class NoopStore:
+        def save_telemetry_events(self, *, events):
+            return len(events)
+
+    app.dependency_overrides[main.get_metadata_store] = lambda: NoopStore()
+    app.dependency_overrides[main.get_systemic_check] = lambda: (lambda mv: calls.append(mv))
+    try:
+        TestClient(app).post(
+            "/telemetry",
+            json={
+                "events": [
+                    {"model_version_id": "mv_1", "occurred_at": "2026-08-23T00:00:00Z", "status": "ok"},
+                    {"model_version_id": "mv_2", "occurred_at": "2026-08-23T00:00:00Z", "status": "ok"},
+                ]
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert sorted(calls) == ["mv_1", "mv_2"]

@@ -61,6 +61,16 @@ def get_telemetry_sink():
 
 
 @lru_cache
+def get_systemic_check():
+    from agents.brain4.falcon.monitor import check_systemic
+
+    def run(model_version_id):
+        check_systemic(model_version_id=model_version_id, metadata_store=get_metadata_store())
+
+    return run
+
+
+@lru_cache
 def get_predict_transport():
     import httpx
 
@@ -119,12 +129,18 @@ async def ingest(
 async def ingest_telemetry(
     batch: TelemetryBatch,
     metadata_store=Depends(get_metadata_store),
+    systemic_check=Depends(get_systemic_check),
 ):
     written = metadata_store.save_telemetry_events(
         # mode="json" so `occurred_at` (a datetime) serializes back to an ISO string —
         # the Supabase client can't JSON-serialize a raw datetime object.
         events=[event.model_dump(mode="json") for event in batch.events]
     )
+    for model_version_id in {event.model_version_id for event in batch.events}:
+        try:
+            systemic_check(model_version_id)
+        except Exception:  # noqa: BLE001 - detection failing must not fail ingestion
+            pass
     return {"written": written}
 
 @app.get("/models/{model_version_id}/telemetry")
