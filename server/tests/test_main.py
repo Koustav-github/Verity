@@ -405,3 +405,20 @@ def test_ingest_forwards_the_alert_email_to_the_orchestrator():
         app.dependency_overrides.clear()
 
     assert captured["alert_email"] == "ops@example.com"
+
+
+def test_get_alerts_returns_the_stored_rows_for_the_version():
+    class FakeStore:
+        def find_alert_events(self, *, model_version_id):
+            return [{"id": "alrt_1", "model_version_id": model_version_id, "kind": "systemic"}]
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    try:
+        response = TestClient(app).get("/models/mv_1/alerts")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_version_id"] == "mv_1"
+    assert body["alerts"][0]["kind"] == "systemic"

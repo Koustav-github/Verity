@@ -175,6 +175,15 @@ async def read_telemetry(
     return {"model_version_id": model_version_id, "hours": hours, **summary}
 
 
+@app.get("/models/{model_version_id}/alerts")
+async def read_alerts(
+    model_version_id: str,
+    metadata_store=Depends(get_metadata_store),
+):
+    alerts = metadata_store.find_alert_events(model_version_id=model_version_id)
+    return {"model_version_id": model_version_id, "alerts": alerts}
+
+
 @app.post("/users/{user_id}/models/{name}/predict")
 async def predict(
     user_id: str,
