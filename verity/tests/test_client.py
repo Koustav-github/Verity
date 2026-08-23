@@ -102,3 +102,22 @@ def test_extra_keyword_arguments_are_still_forwarded_as_args():
     )
 
     assert b"framework_hint" in captured["request"].content
+
+
+def test_assemble_forwards_alert_email_to_upload():
+    captured = {}
+
+    assemble(
+        {"kind": "fake-model"},
+        user_id="u_1",
+        name="fraud-classifier",
+        endpoint="http://verity-server.test",
+        client=_mock_client(captured),
+        alert_email="ops@example.com",
+    )
+
+    content = captured["request"].content
+    # Its own form field, not swept into the catch-all `args` bucket alongside
+    # arbitrary extra kwargs.
+    assert b'name="alert_email"' in content
+    assert b"ops@example.com" in content

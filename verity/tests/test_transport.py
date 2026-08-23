@@ -129,3 +129,48 @@ def test_upload_omits_the_environment_field_when_none_was_captured():
     )
 
     assert b'name="environment"' not in captured["request"].content
+
+
+def test_upload_sends_the_alert_email_as_a_form_field_when_given():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={"status": "pending"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    upload(
+        payload=b"fake-artifact-bytes",
+        sha256="abc123",
+        user_id="u_1",
+        name="fraud-classifier",
+        args={},
+        endpoint="http://verity-server.test",
+        client=client,
+        alert_email="ops@example.com",
+    )
+
+    assert b"ops@example.com" in captured["request"].content
+
+
+def test_upload_omits_alert_email_when_not_given():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={"status": "pending"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    upload(
+        payload=b"fake-artifact-bytes",
+        sha256="abc123",
+        user_id="u_1",
+        name="fraud-classifier",
+        args={},
+        endpoint="http://verity-server.test",
+        client=client,
+    )
+
+    assert b"alert_email" not in captured["request"].content

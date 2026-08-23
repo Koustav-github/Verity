@@ -19,6 +19,7 @@ def upload(
         fixture_payload: bytes | None = None,
         fixture_descriptor: dict | None = None,
         environment: dict | None = None,
+        alert_email: str | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
 
 ) -> dict:
@@ -36,6 +37,12 @@ def upload(
     # image against the versions that wrote the pickle, not the ones it happens to run.
     if environment is not None:
         data["environment"] = json.dumps(environment)
+
+    # Where a human is notified when Falcon detects something off. Optional, and only
+    # meaningful on the upload that first creates the model — later versions of an
+    # existing model don't need to repeat it.
+    if alert_email is not None:
+        data["alert_email"] = alert_email
 
     response = client.post(
         f"{endpoint}/ingest",

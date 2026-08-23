@@ -16,6 +16,7 @@ def assemble(
     X_test=None,
     y_test=None,
     fixture: tuple | None = None,
+    alert_email: str | None = None,
     **args,
 ) -> dict:
     """Upload a trained model for identification, evaluation, and monitoring.
@@ -41,6 +42,7 @@ def assemble(
         fixture_payload=fixture_payload,
         fixture_descriptor=fixture_descriptor,
         environment=capture(),
+        alert_email=alert_email,
         timeout=timeout,
     )
 
