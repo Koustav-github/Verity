@@ -47,8 +47,9 @@ The logical model, stable across versions.
 | `model_class` | text | `ML` · `DL` · `RL` · `LLM_APP` · `RAG` · `AGENTIC` |
 | `task_type` | text | Atlas lookup key, e.g. `binary_classification` |
 | `created_at` | timestamptz | |
+| `alert_email` | text | nullable; who Falcon emails on a detected anomaly. Set at `assemble()` time (`verity.assemble(..., alert_email=...)`); `agents/brain3/fury/registry.py`'s existing-model branch never touches it, so re-uploading a new version of an already-registered model cannot silently change who gets notified |
 
-Every column here is built (`c8e51f4d9a06`).
+Every column here is built (`c8e51f4d9a06`; `alert_email` added by `4d3c31bd85bd`).
 
 `model_class` is aspirational as written above: the shipped registry
 (`agents/brain3/fury/registry.py`) copies this value straight from Hawkeye's manifest,
@@ -203,14 +204,20 @@ outgrows it.
 | `status` | text | `ok` · `error` · `timeout` |
 | `inputs` / `prediction` | jsonb | sampled, not necessarily every request |
 | `error_type` | text | |
+| `prediction_id` | text | nullable, indexed (`ix_telemetry_event_prediction_id`). The proxy's own correlation key, minted at request time (`pred_…`, `server/main.py`'s `predict()`) and threaded onto the queued telemetry row before it's ever written — the database-assigned bigint `id` doesn't exist yet when the response goes out, and a customer reporting a delayed outcome needs something to correlate against immediately. Null for SDK-reported events (`POST /telemetry`) from a customer-hosted model, which has no such key to report; that's an honest absence, not a bug |
 
-Every column here is built (`e91a3d7c5b28`).
+Every column here is built (`e91a3d7c5b28`; `prediction_id` added by `48814b26b964`).
 
 `inputs` and `prediction` are created but **not written at V1**. They exist to support drift
 detection, which is V7; the V1 metric set — request count, latency percentiles, error rate —
 needs neither. Leaving them null removes the entire sampling-policy question at V1 (no rate to
 configure, no config for the SDK to fetch before it can start) and costs nothing V1 promises.
 V7 adds a writer rather than a migration.
+
+api-fication changed this: once Verity serves the model itself, `inputs` and `prediction` are
+non-null on every proxied request (§9 of `architecture.md`), and `prediction_id` exists
+specifically so that written `prediction` can later be joined against a delayed label — see
+`label_event` below.
 
 ### `monitoring_config`
 Falcon's output — written when a version reaches `production`.
@@ -223,14 +230,21 @@ Falcon's output — written when a version reaches `production`.
 | `metrics` | jsonb | metric names to collect; fixed at V1 |
 | `eval_reference` | jsonb | eval-time measured values, carrying `"basis": "sandbox_feasibility"` |
 | `created_at` | timestamptz | |
+| `alert_thresholds` | jsonb | nullable; the exact `quality_metric_set` / `quality_thresholds` (copied verbatim from the promoting `eval_run`) plus `error_rate_relative_increase` / `latency_p95_relative_increase` this version is watched against — frozen at `configure()` time, the same "as applied" philosophy as `eval_run.thresholds`, so a later change to Falcon's detection defaults never retroactively changes what an already-promoted version is being alerted on |
 
-Every column here is built (`e91a3d7c5b28`).
+Every column here is built (`e91a3d7c5b28`; `alert_thresholds` added by `4d3c31bd85bd`).
 
 `eval_reference` is a **feasibility reference, not a production baseline**. Its numbers are
 lifted from the `eval_run` that promoted the version, which measured them in a single-process,
 single-client, cold sandbox — production latency under real concurrency will be materially
-higher. Nothing in V1 compares against it; the `basis` marker exists so V7's rule engine can
-tell what kind of number it is reading.
+higher. The `basis` marker exists so a reader can tell what kind of number it is looking at.
+
+This was originally "nothing in V1 compares against it" — no longer true. Falcon's
+agentic-observability feature (`agents/brain4/falcon/detect.py`, `monitor.py`) compares two
+adjacent live-traffic windows against each other, never against `eval_reference` directly (see
+`architecture.md` §8.7) — the honesty constraint against a cold-sandbox baseline still holds,
+it's just satisfied by comparing recent traffic to its own immediately preceding traffic instead
+of to a feasibility figure that was always going to look better than production.
 
 ### `deployment`
 Where a promoted version actually runs. Created by `c3b8e15d47af`; listed under V6 in earlier
@@ -259,6 +273,52 @@ loads in the training environment but not the built one), and those reasons belo
 rather than in a log line. Deployment failure is deliberately **non-fatal** to the promotion
 that triggered it — the version is already `production` by then, and a build failure must not
 retroactively 500 a promotion that genuinely succeeded. It leaves a `failed` row instead.
+
+### `label_event`
+A delayed outcome the customer reports against a `prediction_id`, keyed to one instance inside
+that prediction's batch. Created by `f25b10b1e9a6`. Every column below is built.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | text PK | `lbl_…` |
+| `telemetry_event_id` | bigint FK → `telemetry_event` | |
+| `instance_index` | integer | which row inside that prediction's batch this label answers |
+| `actual` | jsonb | always `{"y": <value>}` — every writer (`POST /predictions/{id}/outcomes`) wraps it the same way, so no reader has to handle a second shape |
+| `reported_at` | timestamptz | server default `now()` |
+
+`UNIQUE (telemetry_event_id, instance_index)`, enforced by `save_label_event`'s `upsert(...,
+on_conflict="telemetry_event_id,instance_index")` — reporting the same instance twice is treated
+as a correction, overwriting the earlier value rather than accumulating a duplicate that would
+double-count in the next `check_quality` run.
+
+Kept as its own table rather than a column on `telemetry_event` specifically so a label can
+arrive fully asynchronously — days or weeks after the prediction it answers — without touching
+an append-only row. `find_labeled_outcomes` (`server/storage/models/supabase.py`) is the read
+side: it joins this table back to `telemetry_event.prediction` in Python (the fake client used in
+tests has no join support, and neither call needed one) to produce `{y_true, y_pred, y_proba}`
+triples, fetching every `telemetry_event` for the version before filtering to labeled ones — a
+real limitation named rather than hidden, the same relational-at-V1 tradeoff
+`TELEMETRY_READ_LIMIT` already accepts, and one that does not scale past V1 traffic.
+
+### `alert_event`
+Falcon's notification, in-app half. Created by `ec18816eb5c9`. Every column below is built.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | text PK | `alrt_…` |
+| `model_version_id` | text FK → `model_version` | indexed (`ix_alert_event_model_version_id`) |
+| `kind` | text | `systemic` \| `quality` |
+| `metric` | text | which metric tripped — `error_rate`, `latency_p95_ms`, or a quality metric name |
+| `detail` | jsonb | the anomaly dict `detect_systemic_anomaly`/`detect_quality_anomaly` returned — `{metric, recent, baseline, relative_increase}` for a systemic alert, `{metric, op, value, actual}` for a quality one |
+| `created_at` | timestamptz | server default `now()` |
+| `emailed_at` | timestamptz | nullable; set only after a confirmed SES send |
+
+Written before any email is attempted — this row is the source of truth for whether an alert
+fired at all; email is best-effort delivery on top of it, and `emailed_at` staying null is the
+only record that delivery didn't happen (no `alert_email` configured, or a failed send — both
+look identical from this column alone; `GET /models/{id}/alerts` is the only place that
+distinction could be surfaced, and today it isn't). No retry queue for a failed send — named as
+an accepted gap in the design spec, not solved here.
 
 ---
 
@@ -408,7 +468,7 @@ Detailed once the version is designed; listed here so the shape is visible.
 | V4 (LLM/RAG) | `prompt_version` · `index_snapshot` · `eval_example` · `trace_span` | Version identity becomes prompt + index, not weights |
 | V5 (RL/Agentic) | `environment` · `episode` · `trajectory` · `tool_invocation` | Rollout-based eval; a policy is meaningless without a pinned environment |
 | V6 (Platform) | `agent_heartbeat` · `platform_target` | Which *target* a deployment runs on, and whether its agent is alive. `deployment` itself moved to V1 with api-fication |
-| V7 (Alerting) | `alert_rule` · `alert_event` · `recommendation` · `experiment` | Thresholds, firing history, retraining candidates |
+| V7 (Alerting) | `alert_rule` · `recommendation` · `experiment` | Per-model configurable thresholds (today's are one global constant), retraining candidates, shadow/A-B experiments. `alert_event` itself moved to V1 with Falcon's detection feature |
 | V8 (Enterprise) | `role` · `permission` · `sso_config` · `agent_decision_log` | RBAC and a defensible record of every agent decision |
 
 ---

@@ -27,7 +27,7 @@ five minutes.
 ## Current status
 
 All four V1 agents are built. Hawkeye (identification), Nat (evaluation), Fury (registry),
-and Falcon (observability) are implemented and tested — 207 server tests + 45 SDK tests, TDD
+and Falcon (observability) are implemented and tested — 255 server tests + 48 SDK tests, TDD
 throughout, plus container serving on top of them. One call, `verity.assemble(model, name=..., user_id=..., X_test=..., y_test=...)`,
 runs the whole chain: identify the framework and task, evaluate against a labeled holdout with
 quality and systemic metrics (latency, memory, CPU, GPU) gating equally, promote straight to
@@ -36,7 +36,13 @@ for the promoted version. `verity.monitor(model, model_version_id=...)` then rep
 traffic back from wherever the customer serves the model.
 
 All four are verified live end-to-end against real infrastructure — AWS S3, Supabase, and
-Groq — not just against unit tests.
+Groq — not just against unit tests. Falcon's quality check is included in that: 30+
+deliberately-wrong outcomes reported live against a promoted model produced a real `quality`
+alert. Its systemic check's core comparison math is proven by its unit suite instead
+(`test_falcon_detect.py`, `test_falcon_monitor.py`) rather than a live 30-minute soak — the two
+windows it compares are 15 real minutes apart and not independently controllable through any
+API, so exercising it for real without fabricating timestamps costs wall-clock time out of
+proportion to what it would prove beyond what those tests already do.
 
 **Scope, deliberately narrow: tabular / classical ML** — scikit-learn, XGBoost, LightGBM. That
 one class gets finished end to end, api-fication and drift metrics included, before a second is
@@ -60,11 +66,24 @@ The proxy is also the first point at which Verity has ever seen production *inpu
 That is what makes drift detection possible, and why serving came before the drift metrics
 rather than after.
 
-Also missing: alerting. Falcon collects and exposes telemetry but compares nothing and fires
-nothing, because the only baseline available today is a cold-sandbox feasibility figure rather
-than a production one — shipping a comparison against it would just train people to ignore the
-alerts. Alerting is V7, and the monitoring config Falcon writes is what V7's rule engine will
-consume.
+**Falcon now detects and notifies, not just configures and exposes.** Two checks run inline,
+triggered by the events that already move data — no scheduler, no poller. `check_systemic`
+compares a version's last 15 minutes of live traffic against the 15 minutes before that
+(`error_rate`, then `latency_p95_ms`) every time a telemetry batch flushes, whether Verity's own
+proxy wrote it or the SDK reported it from a customer-hosted model. `check_quality`
+recomputes the exact metrics and thresholds that gated promotion once `POST
+/predictions/{prediction_id}/outcomes` — a new endpoint for reporting delayed ground truth
+against a `prediction_id` the proxy now mints on every response — has accumulated 30 labels for
+a version. Either check firing writes an `alert_event` row first (the source of truth for
+whether an alert fired at all) and best-effort emails whoever the model owner registered as
+`alert_email`; a dead or unconfigured mail path never erases the row or fails the request that
+triggered it. `GET /models/{id}/alerts` reads them back. Still deliberately not solved: one
+global threshold for every model, no detection of a customer who simply never reports labels,
+and no retry on a failed email — all named, not hidden, in `docs/architecture.md` §8.7-§8.11.
+
+Still not solved: comparing against `eval_reference` itself (§8.3) — the two checks above compare
+live traffic against its own immediately preceding history instead, which sidesteps the
+cold-sandbox-baseline honesty problem rather than resolving it.
 
 `verity/`'s original interrogation-pipeline eval engine (faithfulness / answer-relevance /
 context-relevance) was deleted before this build started; `verity/` is now the client SDK
@@ -117,7 +136,7 @@ each version below names only the tables and connections it *adds*.
 touched by hand."
 
 All four agents, shallow, single path. Tabular / classical ML only — scikit-learn, XGBoost,
-LightGBM. No multi-tenancy, no dashboard, no alerting.
+LightGBM. No multi-tenancy, no dashboard.
 
 | Stage | Scope at V1 |
 |---|---|
@@ -125,7 +144,7 @@ LightGBM. No multi-tenancy, no dashboard, no alerting.
 | Nat | Atlas lookup → metric set; labeled-holdout eval; quality and systemic metrics gate equally |
 | Fury | `name` + content-hash version identity; a passing verdict promotes straight to production |
 | *serving* | one container image per promoted version; request schema generated from the introspected surface; Verity proxies `/predict` |
-| Falcon | request count, latency percentiles, error rate — recorded by the proxy when Verity serves, by the SDK when the customer does |
+| Falcon | request count, latency percentiles, error rate — recorded by the proxy when Verity serves, by the SDK when the customer does; compares adjacent 15-minute windows and delayed-label accuracy against promotion-time thresholds, notifying in-app and by best-effort email on a breach |
 
 Serving is not a fifth agent. It is generated pipeline, triggered by promotion — see
 [agents configure, pipelines execute](#the-design-principle-agents-configure-pipelines-execute).
@@ -143,7 +162,7 @@ artifact → Hawkeye → manifest → Nat → eval_run → Fury → registered v
 
 - **MCP:** `filesystem` (read artifact) · `python-exec` (run eval in a sandbox)
 - **Stores:** relational (metadata) · object store (artifacts)
-- **Tables:** `model` · `model_version` · `manifest` · `eval_run` · `monitoring_config` · `deployment` · `telemetry_event` · `agent_run`
+- **Tables:** `model` · `model_version` · `manifest` · `eval_run` · `monitoring_config` · `deployment` · `telemetry_event` · `label_event` · `alert_event` · `agent_run`
 - **Components:** agent orchestrator · manifest generator · metric resolver · eval runner · scoring engine · registry service · image builder · container runtime · inference proxy · ingestion endpoint · SDK
 
 **Deliverable:** hand Verity a trained estimator and get back a registered, served, monitored
@@ -241,13 +260,18 @@ reward, success rate, and trajectory correctness over N episodes.
 ### V7 — Alerting + remediation
 **Goal:** "Don't just tell me the problem."
 
-- Threshold and anomaly alerts; notification channels
+Threshold and anomaly alerting moved forward into V1 with Falcon's agentic-observability
+feature — see [Current status](#current-status) and `docs/architecture.md` §8.7-§8.11.
+What's left here:
+
+- Per-model configurable thresholds (today's `RELATIVE_INCREASE_THRESHOLD` is one global
+  constant, not tuned per task); notification channels beyond email
 - Retraining recommendations, candidate generation
 - Shadow deployments, A/B comparison
 
 - **MCP:** + notification servers · CI/CD servers (trigger retraining)
-- **Tables:** `alert_rule` · `alert_event` · `recommendation` · `experiment`
-- **Components:** rule engine · notifier · candidate evaluator
+- **Tables:** `alert_rule` · `recommendation` · `experiment` (`alert_event` itself moved to V1)
+- **Components:** rule engine · candidate evaluator
 
 ### V8 — Enterprise
 **Goal:** "Deployable inside someone else's compliance boundary."

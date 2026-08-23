@@ -1,9 +1,10 @@
 # Verity — Full Architecture & Workflow
 
 > Source analysed: `e:\Projects\Verity`, branch `main`. All file references are relative
-> to the repo root. Server test suite: 207 passing. SDK test suite: 45 passing.
+> to the repo root. Server test suite: 255 passing. SDK test suite: 48 passing.
 >
-> This describes all four V1 agents and container serving, all as built.
+> This describes all four V1 agents, container serving, and Falcon's agentic
+> observability (detection + notification), all as built.
 
 ---
 
@@ -26,10 +27,13 @@ agent is a pure function with every collaborator injected and a lazy real defaul
 whole chain is testable with hand-written fakes and zero mocking.
 
 A promotion additionally builds and starts a container for the version (§9), which Verity
-then fronts: `POST /users/{id}/models/{name}/predict` proxies to it and records every request.
-Two further routes sit outside the chain entirely — `POST /telemetry` accepts batched live
-traffic from `verity.monitor()` when the customer hosts the model themselves, and
-`GET /models/{id}/telemetry` summarises whichever source produced it.
+then fronts: `POST /users/{id}/models/{name}/predict` proxies to it, mints a `prediction_id`,
+and records every request. Three further routes sit outside the chain entirely —
+`POST /telemetry` accepts batched live traffic from `verity.monitor()` when the customer hosts
+the model themselves, `GET /models/{id}/telemetry` summarises whichever source produced it, and
+`POST /predictions/{prediction_id}/outcomes` accepts a delayed label against a specific past
+prediction. Both the proxy and the outcomes route inline-trigger Falcon's detection (§8.7-§8.9);
+`GET /models/{id}/alerts` reads back whatever it found.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -437,17 +441,22 @@ that needs labels, and production traffic doesn't come with any.
 
 ### 8.3 The honesty constraint that shaped the design
 
-The reference carries `"basis": "sandbox_feasibility"`, and **V1 compares nothing and alerts
-on nothing.** Those numbers came from a single-process, single-client, cold sandbox; real
-latency under concurrency will be materially higher. A baseline that is wrong by construction,
-shipped with alerts attached, trains people to ignore alerts — which is worse than no alerting
-at all. The `basis` marker exists so V7's rule engine can tell what kind of number it is
-reading, and `client/src/components/telemetry-panel.tsx` renders the reference beside the live
-numbers as *context*: no comparison, no pass/fail colouring.
+The reference carries `"basis": "sandbox_feasibility"`, and **nothing compares against it,
+still.** Those numbers came from a single-process, single-client, cold sandbox; real latency
+under concurrency will be materially higher. A baseline that is wrong by construction, shipped
+with alerts attached, trains people to ignore alerts — which is worse than no alerting at all.
+The `basis` marker exists so a reader can tell what kind of number it is looking at, and
+`client/src/components/telemetry-panel.tsx` renders the reference beside the live numbers as
+*context*: no comparison, no pass/fail colouring.
 
-This is the weakest point in the current design, and api-fication is what fixes it — once
-Verity serves the model itself, the proxy measures real production latency and the reference
-can be rebased on a number of the same kind as the one it is compared against.
+This was originally V1's stated reason for comparing and alerting on nothing at all — the only
+baseline available was the sandbox figure, and shipping alerts against it would have trained
+people to ignore them. api-fication fixed the measurement half of that (the proxy now measures
+real production latency, §9.8), and the agentic-observability feature (§8.7-§8.10) fixes the
+comparison half — but not by rebasing `eval_reference` itself. It compares live traffic against
+its *own* immediately preceding traffic instead, which sidesteps the honesty problem entirely
+rather than resolving it: there is still no claim that any single number is "correct," only that
+the last fifteen minutes look substantially worse than the fifteen before it.
 
 ### 8.4 Telemetry must never be why inference fails
 
@@ -485,6 +494,140 @@ reason.
 percentiles with no I/O and no database access, which is why it is testable with a list of
 dicts. Percentiles come from `numpy.percentile`. `truncated` is set when the row limit was
 reached, so a caller can distinguish "1000 events" from "at least 1000 events".
+
+### 8.7 Detection — two independent checks, both reusing Nat's own machinery
+
+`agents/brain4/falcon/detect.py` is two pure functions and four constants, zero LLM calls,
+zero I/O — the same "arithmetic over evidence that already exists" character as the rest of
+Falcon:
+
+```python
+WINDOW_MINUTES = 15                 # recent = [now-15m, now); baseline = [now-30m, now-15m)
+WINDOW_MIN_EVENTS = 20               # below this, normal variance looks like an anomaly
+RELATIVE_INCREASE_THRESHOLD = 0.5    # 50% worse than the trailing window trips an alert
+MIN_LABELS = 30                      # below this, a handful of delayed labels is noise
+```
+
+`detect_systemic_anomaly(*, recent_summary, baseline_summary)` (`detect.py:28-52`) compares two
+`telemetry.summarize()` outputs for the same version, checking `error_rate` before
+`latency_p95_ms` when both have jumped — an erroring request is a worse outcome than a slow one,
+and one alert is more actionable than two firing off the same underlying cause
+(`detect.py:14-17`). It never compares against `eval_reference`: that number is a cold-sandbox
+estimate that always looks better than real traffic, so comparing against it would just
+manufacture false alarms (§8.3). Both windows must clear `WINDOW_MIN_EVENTS` independently, or
+the function returns `None` regardless of how extreme the numbers look — a handful of requests
+producing a scary rate is noise, not signal. A baseline of exactly `0` is handled explicitly
+(`_relative_increase`, `detect.py:20-25`): any nonzero recent value against a perfect baseline is
+"infinitely worse" and reported, not a `ZeroDivisionError`.
+
+`detect_quality_anomaly(*, metric_set, thresholds, y_true, y_pred, y_proba=None)`
+(`detect.py:55-74`) recomputes Nat's own `score()` against accumulated labels and re-runs
+`apply_thresholds()` — the exact machinery that gated the original promotion, not a second
+implementation of it. `thresholds` is filtered to non-`resource.*` entries first
+(`RESOURCE_PREFIX`, shared with `agents/brain2/nat/score.py`): a resource threshold has no
+corresponding key in this quality-only scores dict, and Nat's own rule that a threshold on a
+skipped metric is a failure, not a silent pass, would otherwise manufacture a quality alert
+caused by a systemic threshold that was never given data to evaluate.
+
+### 8.8 Orchestration and freezing the gate — `monitor.py`
+
+`build_alert_thresholds(*, eval_run)` (`monitor.py:42-52`) freezes the exact `metric_set` and
+`thresholds` that gated *this* promotion into `monitoring_config.alert_thresholds`, alongside
+the two systemic constants — the same "as applied" philosophy `eval_run.thresholds` already
+uses: a later change to Falcon's detection defaults must never retroactively change what an
+already-promoted version is being watched against. `configure()` (`monitor.py:55-73`) calls it
+and writes the result alongside `eval_reference`, so every version reaching `production` gets
+both in the same insert.
+
+`check_systemic(*, model_version_id, metadata_store, now_fn=None, notify_fn=None)`
+(`monitor.py:75-112`) is the orchestration `detect_systemic_anomaly` needed: `find_telemetry_events`
+has no upper time bound (`since` only), so calling it twice with two different `since` values
+would make the "baseline" window also include every "recent" event. It calls the store **once**,
+over the full `2*WINDOW_MINUTES` span, and splits the returned rows in Python by `occurred_at`
+against the recent/baseline boundary (`_occurred_at`, `monitor.py:159-172`, tolerant of both a
+trailing `Z` and Python's own bare-offset `isoformat()` output). The split uses strict `>` for
+"recent" and `<=` for "baseline" — an event landing exactly on the boundary is the last tick of
+the older window, not the first of the newer one. `check_quality(*, model_version_id,
+metadata_store, notify_fn=None)` (`monitor.py:115-146`) reads `alert_thresholds` off
+`monitoring_config` (never off `eval_run` directly — the frozen copy, not the live source),
+no-ops below `MIN_LABELS`, and otherwise re-scores and notifies exactly like its systemic
+counterpart.
+
+Both functions wrap their **entire body** in `try/except Exception: return None` — not just the
+detection call — because a background flush and a request-path route both call these, and
+neither may fail because a detection bug did. (An earlier draft only wrapped the inner
+detection logic, leaving `now_fn()`/`_minutes()`/the `telemetry` import outside the guard; caught
+and fixed in review before it shipped, since it narrowed the non-fatal guarantee the design
+states explicitly.)
+
+### 8.9 Wiring — inline, at exactly two points, never a scheduler
+
+There is no cron, no queue, no background poller for detection. Both checks run **inline**,
+triggered by the same two events that already move data:
+
+- **`TelemetrySink.flush()`** (`server/serving/sink.py:49-70`) calls `check_systemic` once per
+  *distinct* `model_version_id` in the flushed batch — never once per event — immediately after
+  `save_telemetry_events()` succeeds, so detection only ever runs over data that is already on
+  record. `detect_fn` defaults to a **bound method** (`_default_detect_fn`, `sink.py:29-32`), not
+  a `@staticmethod`, specifically so its lazy-real-default can reuse `self.metadata_store` — the
+  same store this sink was already constructed with — rather than opening a second real
+  connection that would also silently ignore whatever fake a test injected. `/telemetry`
+  (`server/main.py:141-157`) does the analogous thing for SDK-reported traffic, via a
+  `get_systemic_check()` dependency (`main.py:64-72`). Both call sites wrap each detection call
+  in its own `try/except Exception: pass` **in addition to** `check_systemic`'s own internal
+  guard (§8.8) — belt and suspenders around the one invariant that must never break: a detection
+  bug can never turn a successful telemetry write into a failed response.
+- **`POST /predictions/{prediction_id}/outcomes`** (`main.py:268-300`, §8.10 below) calls
+  `check_quality` once, after the batch's labels are saved, through the same
+  `get_quality_check()` shape (`main.py:74-82`).
+
+### 8.10 `prediction_id` — minted before the row that would hold it exists
+
+`predict()` (`main.py:187-234`) generates `prediction_id = f"pred_{uuid.uuid4().hex}"`
+(`main.py:219`) **before** calling the container, not read back from a database insert
+afterward: `TelemetrySink.record()` only queues the event (§9.8), so the database-assigned
+bigint `telemetry_event.id` does not exist yet when the response is returned, and a customer
+reporting a delayed outcome needs something to correlate against immediately. It is threaded
+through `_record()` onto the queued event and returned to the caller as
+`{**prediction, "prediction_id": "pred_..."}` — present whether the call succeeded or the
+container raised, since even a failed prediction gets a telemetry row worth labeling as an
+error.
+
+`POST /predictions/{prediction_id}/outcomes` (`main.py:268-300`) looks the event up via
+`find_telemetry_event_by_prediction_id`, 404s on a miss, and validates **every** outcome's
+`index` against that prediction's own recorded batch size in one pass *before* saving anything —
+a batch containing one bad index writes nothing, rather than partially recording. Each valid
+outcome becomes a `label_event` row (`save_label_event`, upserted on
+`(telemetry_event_id, instance_index)` — a corrected label overwrites the earlier one instead of
+accumulating a duplicate that would double-count in the next quality check), then `check_quality`
+runs once for the event's `model_version_id`, wrapped the same non-fatal way as the systemic
+call sites.
+
+**Named risk, not fixed here**: this route has no ownership check. A `prediction_id` is a
+128-bit `uuid4`, not otherwise exposed at rest, but anyone who obtains one can report an outcome
+against it with no verification they're the tenant who actually received that prediction. This
+is the same *class* of gap `/ingest`, `/telemetry`, and `/predict` already carry by a standing,
+already-reasoned decision — no route in the app has auth until V1.5, and securing one while that
+stands would be theatre. It is called out specifically here, though, because this route feeds
+directly into Falcon's alerting signal: a leaked `prediction_id` lets someone inject a fabricated
+label that either suppresses a real alert or manufactures a false one, a sharper consequence than
+a bad `/telemetry` event merely skewing a summary stat.
+
+### 8.11 Notification — the row is truth, email is best-effort
+
+`agents/brain4/falcon/notify.py` and `email.py` implement the second half of `notify_fn`:
+`record_and_notify(*, model_version_id, kind, metric, detail, metadata_store, email_fn=None)`
+(`notify.py:9-31`) writes the `alert_event` row **first**, unconditionally — this row is the
+source of truth for whether an alert fired at all, before anything about email is even
+considered. It then looks up the owning model's `alert_email` via `find_model_by_version`
+(itself wrapped in `try/except`, `notify.py:34-39` — a lookup failure still leaves the in-app row
+standing). No configured address returns immediately with no email attempt. A configured address
+calls `email_fn` (defaulting to `send_alert_email`, `email.py:9-19`, a thin wrapper over
+`boto3.client("ses")` reusing the same AWS account api-fication's S3 usage already lives in) —
+wrapped in its own `try/except Exception`, so a raising or failing send **never** undoes the
+alert row already written. `update_alert_event(emailed_at=...)` is called only after a
+confirmed send; `emailed_at` staying `null` is the only record that delivery didn't happen, and
+nothing retries it (an accepted gap, named in the design spec, not solved here).
 
 ---
 
@@ -766,21 +909,21 @@ verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
 
 | Path | Contents |
 |---|---|
-| `server/main.py` | FastAPI app, CORS, four routes (`/ingest`, `/telemetry`, `/models/{id}/telemetry`, `/users/{id}/models/{name}/predict`), DI wiring |
+| `server/main.py` | FastAPI app, CORS, six routes (`/ingest`, `/telemetry`, `/models/{id}/telemetry`, `/users/{id}/models/{name}/predict`, `/predictions/{id}/outcomes`, `/models/{id}/alerts`), DI wiring |
 | `server/orchestrator.py` | `build_artifact` — sequences all four agents |
 | `server/telemetry.py` | `summarize()` — pure function, no I/O (§8.6) |
 | `server/serving/` | `app_template.py` (the served app), `build.py` (context), `runtime.py` (Docker seam), `deploy.py` (orchestration), `sink.py` (non-blocking telemetry) |
 | `server/storage/models/` | `S3BlobStore`, `SupabaseMetadataStore` |
 | `server/execution/` | `sandbox.py` (`execute` + `introspect`), `runner.py` (child, standalone, dispatches on `mode`) |
-| `server/migrations/` | Alembic revisions — `model`, `model_version`, `manifest`, `eval_run`, `telemetry_event`, `monitoring_config` |
-| `server/tests/` | 207 tests, hand-written fakes, no `unittest.mock` |
+| `server/migrations/` | Alembic revisions — `model`, `model_version`, `manifest`, `eval_run`, `telemetry_event`, `monitoring_config`, `label_event`, `alert_event` |
+| `server/tests/` | 255 tests, hand-written fakes, no `unittest.mock` |
 | `agents/provider.py` | shared LLM base URL / default model |
 | `agents/brain1/hawkeye/` | identification — one LLM call, one pydantic model |
 | `agents/brain2/nat/` | `evaluate.py` (orchestration), `resolve.py` (LLM), `score.py` (deterministic), `registry.py` + `mechanisms/` (dispatch) |
 | `agents/brain3/fury/` | `registry.py` — dedup, identity, promotion, archival |
-| `agents/brain4/falcon/` | `monitor.py` — the LLM-free agent; reference lifted from `eval_run` |
+| `agents/brain4/falcon/` | `monitor.py` (`configure`, `check_systemic`, `check_quality` — the LLM-free agent), `detect.py` (the two pure anomaly checks), `notify.py` + `email.py` (alert row + best-effort SES) |
 | `verity/src/verity/` | SDK — `client.py`, `transport.py`, `serialize.py`, `fixture.py`, `monitor.py`, `environment.py`, `cli.py` |
-| `verity/tests/` | 45 tests, same conventions as `server/tests/` |
+| `verity/tests/` | 48 tests, same conventions as `server/tests/` |
 | `client/src/app/page.tsx` | the intake form — the one client component |
 | `client/src/lib/verity.ts` | browser-side hashing + `/ingest` call |
 | `client/public/demo/` | pre-baked demo model + fixture |

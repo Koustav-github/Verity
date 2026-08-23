@@ -197,3 +197,97 @@ the record is being maintained after the reboot
    Still not automated past here: drift and data-quality metrics (now unblocked), alerting (V7),
    the `agent_run` audit trail, comparative promotion gating, and anything beyond a single
    local replica — deployments live and die with the machine running Verity.
+
+10. Falcon detects and notifies now — what entry 9 still listed as "alerting (V7)" moved
+    forward into V1, brought closer by api-fication itself: once the proxy measures real
+    production latency (entry 9) and sees real production inputs, comparing live traffic
+    against itself rather than against a cold-sandbox figure stopped requiring anything V3's
+    analytics store was supposed to unlock first.
+    - **Two checks, zero LLM calls, reusing machinery that already existed rather than
+      reimplementing it.** `agents/brain4/falcon/detect.py`'s `detect_systemic_anomaly` compares
+      a version's trailing 15 minutes of traffic (`error_rate`, then `latency_p95_ms`) against
+      the 15 minutes before that — never against `eval_reference`, which is a cold-sandbox
+      estimate that always looks better than real traffic and would just manufacture false
+      alarms. `detect_quality_anomaly` re-runs Nat's own `score()`/`apply_thresholds()` against
+      accumulated delayed labels, against the exact `metric_set` and thresholds frozen at
+      promotion time — not a second scoring implementation, the same one. Below
+      `WINDOW_MIN_EVENTS=20` events in either window, or `MIN_LABELS=30` accumulated labels,
+      both are a deliberate no-op: a handful of events producing a scary-looking number is
+      noise, not signal.
+    - **No scheduler, no poller — both checks run inline, triggered by the events that already
+      move data.** `check_systemic` fires from `TelemetrySink.flush()` (once per distinct
+      `model_version_id` in the batch, after the write succeeds) and from `POST /telemetry`,
+      covering both a Verity-served model and a customer-hosted one reporting through the SDK.
+      `check_quality` fires from the new `POST /predictions/{prediction_id}/outcomes` once its
+      batch of labels lands. Every call site wraps the check in its own `try/except` on top of
+      the check's *own* internal one — belt and suspenders around the one rule that must never
+      break: a detection bug can never turn a successful write into a failed response.
+    - **`prediction_id`, minted before the row that would hold it exists.** The proxy's
+      `predict()` generates `pred_<uuid4>` before calling the container, not read back from a
+      database insert — `TelemetrySink` only queues the write, so the bigint `telemetry_event.id`
+      doesn't exist yet when the response goes out, and a customer reporting a delayed outcome
+      needs something to correlate against immediately. New `label_event` table, upserted on
+      `(telemetry_event_id, instance_index)` so a corrected label overwrites rather than
+      double-counts.
+    - **The row is the truth; email is best-effort on top of it.** `record_and_notify` writes a
+      new `alert_event` row unconditionally, first, then attempts an email via AWS SES (same
+      account api-fication's S3 usage already lives in) only if the model has a registered
+      `alert_email` — a raising or failing send is swallowed and never un-writes the alert.
+      `emailed_at` staying null is the only record delivery didn't happen; nothing retries it.
+    - `alert_email` threads all the way from `verity.assemble(model, ..., alert_email=...)`
+      through `upload()` → `/ingest` → `orchestrator.build_artifact()` →
+      `agents/brain3/fury/registry.py`'s `register()` → `create_model()`. Deliberately one-way:
+      the existing-model branch of `register()` never touches a model's `alert_email` on a later
+      version's upload, so re-uploading an already-registered model can't silently change who
+      gets notified.
+    - **Verified live, not just against the unit suite — with one constraint worked around
+      rather than fought.** `check_systemic` compares two windows exactly 15 minutes apart by
+      `occurred_at`, which is set server-side and isn't backdateable through any API; genuinely
+      exercising it with two real, temporally-separated windows would cost ~30 real minutes of
+      waiting for one verification step, which wasn't worth burning. What *was* run for real:
+      started the server, used `verity --demo` to get a promoted, Docker-deployed model, sent 35
+      clean predictions in one burst (one of 36 attempts hit the unrelated flake noted below) —
+      `GET /models/{id}/alerts` stayed empty, confirming
+      `check_systemic` runs without error and correctly stays silent with no aged baseline window
+      yet (not a false negative; there was nothing 15-30 minutes old to compare against). Then,
+      against the same model, reported 32 deliberately wrong outcomes
+      (`actual = 1 - predicted`) through the new outcomes route — three real `quality` alerts
+      fired once `MIN_LABELS` was crossed, detail `{"metric": "accuracy", "op": ">=", "value":
+      0.75, "actual": 0.0}`, thresholds read back verbatim from the promoting `eval_run`. A
+      second version was
+      assembled with `alert_email="ops@example.com"` set and put through the same wrong-outcome
+      burst specifically to exercise the SES-failure path (no `SES_SENDER`/SES-authorized
+      credentials configured in this environment — only S3's, which don't authorize
+      `ses:SendEmail`): two more alerts fired, `emailed_at` stayed null on every alert across
+      both runs, and every triggering request — `/predict`, and all 63
+      `/predictions/.../outcomes` calls — returned 200. The systemic check's own comparison
+      arithmetic is what `test_falcon_detect.py` and `test_falcon_monitor.py` prove instead, with
+      synthetic timestamps exactly 15 and 30 minutes apart — that is the actual proof of
+      correctness for that half, not a claim of a live soak test that wasn't run.
+    - **Found live, not a regression in this feature:** two of 171 live requests logged during
+      this verification hit a
+      transient `httpx`/Supabase `RemoteProtocolError: Server disconnected` inside
+      `find_model`/`find_production_version` — pre-existing code this task didn't touch, both
+      simple retries, named here for the record rather than silently absorbed.
+    - **Accepted risks, named in the design spec, not solved here:** one global
+      `RELATIVE_INCREASE_THRESHOLD` for every model regardless of how bursty its traffic
+      naturally is; a model whose customer never reports a single outcome is invisible to
+      `check_quality` forever, indistinguishable from "the model is fine"; each window only ever
+      compares against its immediate predecessor, so a slow decline spread across many windows
+      never trips any single comparison (needs a longer historical baseline — the analytics store
+      V3 already earmarks for telemetry volume, not invented here); best-effort email only, no
+      retry queue for a failed SES send.
+    - **Security finding surfaced during implementation, deliberately not fixed:**
+      `POST /predictions/{prediction_id}/outcomes` has no ownership check — a `prediction_id` is
+      a 128-bit `uuid4` not otherwise exposed at rest, but anyone who obtains one can report an
+      outcome against it with no verification they received that prediction. Same class of gap
+      `/ingest`, `/telemetry`, and `/predict` already carry by the standing, already-reasoned
+      decision that no route has auth until V1.5 — securing one while that stands would be
+      theatre. Called out specifically here because this route feeds directly into the alerting
+      signal: a leaked `prediction_id` lets someone inject a fabricated label that suppresses a
+      real alert or manufactures a false one, a sharper consequence than a bad `/telemetry` event
+      merely skewing a summary stat.
+    Still not automated past here: input drift detection (a separate mechanism — needs a
+    distributional distance metric that doesn't exist yet), autonomous retraining (a human
+    decides, always), the `agent_run` audit trail, comparative promotion gating, and anything
+    beyond a single local replica.
