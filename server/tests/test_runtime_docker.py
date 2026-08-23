@@ -428,3 +428,45 @@ def test_fargate_stop_wraps_a_failure_in_container_runtime_error():
 
     with pytest.raises(ContainerRuntimeError):
         runtime.stop(container_id="arn:aws:ecs:task:abc")
+
+
+@pytest.mark.aws
+def test_a_real_model_deploys_to_fargate_and_answers_health(tmp_path):
+    """The only test that touches real AWS. Skipped unless VERITY_RUN_FARGATE_LIVE_TEST=1.
+
+    Costs real time (a Fargate task takes 30-90s to reach RUNNING) and a small real
+    dollar amount (the task runs for the duration of this test, then is stopped).
+    """
+    from serving.build import image_tag, render_context
+
+    model = LogisticRegression().fit(
+        np.array([[0.0, 1.0], [1.0, 0.0], [0.5, 0.5], [0.2, 0.8]]),
+        np.array([0, 1, 0, 1]),
+    )
+    render_context(
+        dest=tmp_path,
+        payload=cloudpickle.dumps(model),
+        io_schema={
+            "n_features": 2,
+            "feature_names": None,
+            "classes": [0, 1],
+            "has_predict_proba": True,
+        },
+        environment={
+            "python_version": "3.12",
+            "packages": {
+                "scikit-learn": _installed("scikit-learn"),
+                "numpy": _installed("numpy"),
+                "cloudpickle": _installed("cloudpickle"),
+            },
+        },
+    )
+
+    runtime = FargateRuntime()  # reads all config from VERITY_FARGATE_* env vars
+    tag = image_tag("mv_fargate_itest")
+    runtime.build(context_dir=str(tmp_path), tag=tag)
+    started = runtime.run(tag=tag)
+    try:
+        assert wait_healthy(url=f"{started['endpoint_url']}/health", timeout=120.0)
+    finally:
+        runtime.stop(container_id=started["container_id"])

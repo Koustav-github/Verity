@@ -35,4 +35,5 @@ dev = ["pytest>=7.0", "httpx>=0.27.0"]
 pythonpath = [".", ".."]
 markers = [
     "docker: needs a running Docker daemon; skipped automatically when unreachable",
+    "aws: hits real AWS resources and costs real money/time; requires VERITY_RUN_FARGATE_LIVE_TEST=1, never auto-detected",
 ]
