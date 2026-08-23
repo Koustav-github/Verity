@@ -1,6 +1,8 @@
 import type { IngestResult } from "@/lib/verity";
 import { VerdictStamp } from "./verdict-stamp";
 import { TelemetryPanel } from "./telemetry-panel";
+import { DeploymentCard } from "./deployment-card";
+import { AlertsPanel } from "./alerts-panel";
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -110,8 +112,13 @@ export function EvidenceReport({ result }: { result: IngestResult }) {
         <Row label="status" value={result.status} />
       </div>
 
+      {result.deployment && <DeploymentCard deployment={result.deployment} />}
+
       {result.monitoring_config && (
-        <TelemetryPanel modelVersionId={result.model_version_id} />
+        <>
+          <TelemetryPanel modelVersionId={result.model_version_id} />
+          <AlertsPanel modelVersionId={result.model_version_id} />
+        </>
       )}
     </section>
   );

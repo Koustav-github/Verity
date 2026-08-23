@@ -39,6 +39,15 @@ export type EvalRun = {
   error: { type: string; message: string } | null;
 };
 
+export type Deployment = {
+  id: string;
+  status: "building" | "live" | "failed" | "stopped";
+  host_port?: number | null;
+  endpoint_url?: string | null;
+  image_tag: string;
+  error?: { type: string; message: string } | null;
+};
+
 export type IngestResult = {
   model_version_id: string;
   artifact_uri: string;
@@ -49,6 +58,9 @@ export type IngestResult = {
   deduplicated?: boolean;
   archived_model_version_id?: string | null;
   monitoring_config?: { id: string; metrics: string[] } | null;
+  // Null for a version that wasn't promoted, or whose deploy failed non-fatally —
+  // a null here is never itself an error; check `status` for that.
+  deployment?: Deployment | null;
 };
 
 export class IngestError extends Error {
@@ -130,4 +142,44 @@ export async function fetchTelemetry(
     throw new IngestError(`Couldn't read telemetry (${response.status}).`);
   }
   return response.json();
+}
+
+// Shape varies by `kind`: a systemic detail compares a version against its own
+// trailing window; a quality detail is the failed threshold itself (Nat's own
+// apply_thresholds() shape, `{metric, op, value, actual}`).
+export type SystemicAlertDetail = {
+  metric: string;
+  recent: number;
+  baseline: number;
+  relative_increase: number;
+};
+
+export type QualityAlertDetail = {
+  metric: string;
+  op: string;
+  value: number;
+  actual: number | null;
+};
+
+export type AlertEvent = {
+  id: string;
+  model_version_id: string;
+  kind: "systemic" | "quality";
+  metric: string;
+  detail: SystemicAlertDetail | QualityAlertDetail;
+  created_at: string;
+  emailed_at: string | null;
+};
+
+export async function fetchAlerts(
+  modelVersionId: string,
+): Promise<AlertEvent[]> {
+  const response = await fetch(
+    `${API_BASE}/models/${encodeURIComponent(modelVersionId)}/alerts`,
+  );
+  if (!response.ok) {
+    throw new IngestError(`Couldn't read alerts (${response.status}).`);
+  }
+  const body: { model_version_id: string; alerts: AlertEvent[] } = await response.json();
+  return body.alerts;
 }
