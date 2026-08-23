@@ -520,6 +520,12 @@ producing a scary rate is noise, not signal. A baseline of exactly `0` is handle
 (`_relative_increase`, `detect.py:20-25`): any nonzero recent value against a perfect baseline is
 "infinitely worse" and reported, not a `ZeroDivisionError`.
 
+This comparison itself is proven correct by `test_falcon_detect.py` and `test_falcon_monitor.py`
+with synthetic timestamps `WINDOW_MINUTES` and `2*WINDOW_MINUTES` apart, not by a live 30-minute
+wall-clock soak test — `occurred_at` is set server-side and not backdateable through any API, so
+producing two genuinely separated windows for real would cost real wall-clock time out of
+proportion to what the existing suite already demonstrates.
+
 `detect_quality_anomaly(*, metric_set, thresholds, y_true, y_pred, y_proba=None)`
 (`detect.py:55-74`) recomputes Nat's own `score()` against accumulated labels and re-runs
 `apply_thresholds()` — the exact machinery that gated the original promotion, not a second
