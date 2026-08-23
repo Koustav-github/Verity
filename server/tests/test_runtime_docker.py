@@ -400,3 +400,31 @@ def test_fargate_run_gives_up_if_the_task_never_reaches_running():
 
     with pytest.raises(ContainerRuntimeError):
         runtime.run(tag="verity-model:mv_1", poll_timeout=0.2, poll_interval=0.05)
+
+
+class FakeEcsClientForStop:
+    def __init__(self, raise_on_stop=None):
+        self.stop_calls = []
+        self._raise = raise_on_stop
+
+    def stop_task(self, **kwargs):
+        if self._raise:
+            raise self._raise
+        self.stop_calls.append(kwargs)
+
+
+def test_fargate_stop_calls_ecs_stop_task_with_the_cluster_and_task_arn():
+    ecs = FakeEcsClientForStop()
+    runtime = _fargate_runtime_for_run(ecs_client=ecs)
+
+    runtime.stop(container_id="arn:aws:ecs:task:abc")
+
+    assert ecs.stop_calls == [{"cluster": "verity-cluster", "task": "arn:aws:ecs:task:abc"}]
+
+
+def test_fargate_stop_wraps_a_failure_in_container_runtime_error():
+    ecs = FakeEcsClientForStop(raise_on_stop=RuntimeError("task already stopped"))
+    runtime = _fargate_runtime_for_run(ecs_client=ecs)
+
+    with pytest.raises(ContainerRuntimeError):
+        runtime.stop(container_id="arn:aws:ecs:task:abc")

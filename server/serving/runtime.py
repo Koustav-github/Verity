@@ -248,6 +248,12 @@ class FargateRuntime:
                     return detail["value"]
         raise ContainerRuntimeError(f"task {task['taskArn']} has no network interface attached")
 
+    def stop(self, *, container_id):
+        try:
+            self.ecs.stop_task(cluster=self.cluster, task=container_id)
+        except Exception as exc:  # noqa: BLE001
+            raise ContainerRuntimeError(f"Fargate task failed to stop: {exc}") from exc
+
 
 def wait_healthy(*, url, timeout=60.0, client=None, interval=0.5):
     """Poll /health until it answers 200 or the timeout expires.
