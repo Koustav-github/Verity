@@ -164,6 +164,10 @@ def test_check_systemic_notifies_on_a_real_jump():
     assert notified
     assert notified[0]["kind"] == "systemic"
     assert notified[0]["model_version_id"] == "mv_1"
+    # The single-call design: find_telemetry_events has no upper time bound, so a second
+    # call with a different `since` would silently make the windows overlap. Exactly one
+    # call, split into recent/baseline in Python, is the whole point of that design.
+    assert len(store.telemetry_windows) == 1
 
 
 def test_check_systemic_does_not_notify_when_nothing_is_wrong():

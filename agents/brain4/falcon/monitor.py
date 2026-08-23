@@ -79,13 +79,13 @@ def check_systemic(*, model_version_id, metadata_store, now_fn=None, notify_fn=N
     now_fn = now_fn or _default_now
     notify_fn = notify_fn or _default_notify
 
-    from telemetry import summarize
-
-    now = now_fn()
-    recent_since = now - _minutes(WINDOW_MINUTES)
-    baseline_since = now - _minutes(2 * WINDOW_MINUTES)
-
     try:
+        from telemetry import summarize
+
+        now = now_fn()
+        recent_since = now - _minutes(WINDOW_MINUTES)
+        baseline_since = now - _minutes(2 * WINDOW_MINUTES)
+
         # find_telemetry_events has no upper bound (`since` only) — calling it twice
         # with two different `since` values would make the "baseline" window also
         # include every "recent" event. One call over the full span, split here.
