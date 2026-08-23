@@ -94,7 +94,7 @@ class SupabaseMetadataStore:
         )
         return result.data[0] if result.data else None
 
-    def create_model(self, *, user_id, name, model_class, task_type):
+    def create_model(self, *, user_id, name, model_class, task_type, alert_email=None):
         model_id = f"mdl_{uuid.uuid4().hex}"
         self.client.table("model").insert(
             {
@@ -103,6 +103,7 @@ class SupabaseMetadataStore:
                 "name": name,
                 "model_class": model_class,
                 "task_type": task_type,
+                "alert_email": alert_email,
             }
         ).execute()
         return model_id
@@ -145,15 +146,16 @@ class SupabaseMetadataStore:
 
     def save_monitoring_config(self, *, model_version_id, eval_run_id, config):
         config_id = f"mcfg_{uuid.uuid4().hex}"
-        self.client.table("monitoring_config").insert(
-            {
-                "id": config_id,
-                "model_version_id": model_version_id,
-                "eval_run_id": eval_run_id,
-                "metrics": config["metrics"],
-                "eval_reference": config["eval_reference"],
-            }
-        ).execute()
+        row = {
+            "id": config_id,
+            "model_version_id": model_version_id,
+            "eval_run_id": eval_run_id,
+            "metrics": config["metrics"],
+            "eval_reference": config["eval_reference"],
+        }
+        if "alert_thresholds" in config:
+            row["alert_thresholds"] = config["alert_thresholds"]
+        self.client.table("monitoring_config").insert(row).execute()
         return config_id
 
     def find_monitoring_config(self, *, model_version_id):
@@ -224,3 +226,108 @@ class SupabaseMetadataStore:
         if model is None:
             return None
         return self.find_production_version(model_id=model["id"])
+
+    def find_telemetry_event_by_prediction_id(self, *, prediction_id):
+        result = (
+            self.client.table("telemetry_event")
+            .select("*")
+            .eq("prediction_id", prediction_id)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    def save_label_event(self, *, telemetry_event_id, instance_index, actual):
+        label_id = f"lbl_{uuid.uuid4().hex}"
+        # Upsert on (telemetry_event_id, instance_index): a corrected label overwrites
+        # the earlier one instead of accumulating a duplicate that would double-count
+        # in the next quality check.
+        self.client.table("label_event").upsert(
+            {
+                "id": label_id,
+                "telemetry_event_id": telemetry_event_id,
+                "instance_index": instance_index,
+                "actual": actual,
+            },
+            on_conflict="telemetry_event_id,instance_index",
+        ).execute()
+        return label_id
+
+    def find_labeled_outcomes(self, *, model_version_id, limit=1000):
+        events = (
+            self.client.table("telemetry_event")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .execute()
+        ).data or []
+        events_by_id = {event["id"]: event for event in events}
+
+        labels = (
+            self.client.table("label_event")
+            .select("*")
+            .limit(limit)
+            .execute()
+        ).data or []
+
+        outcomes = []
+        for label in labels:
+            event = events_by_id.get(label["telemetry_event_id"])
+            if event is None:
+                continue
+            index = label["instance_index"]
+            prediction = event.get("prediction") or {}
+            probabilities = prediction.get("probabilities")
+            outcomes.append(
+                {
+                    # Every writer of label_event.actual (the outcomes route in Task 7)
+                    # wraps the value as {"y": ...}; no other shape is ever produced.
+                    "y_true": label["actual"]["y"],
+                    "y_pred": prediction["predictions"][index],
+                    "y_proba": probabilities[index] if probabilities is not None else None,
+                }
+            )
+        return outcomes
+
+    def find_model_by_version(self, *, model_version_id):
+        version = (
+            self.client.table("model_version")
+            .select("*")
+            .eq("id", model_version_id)
+            .execute()
+        )
+        if not version.data:
+            return None
+        model = (
+            self.client.table("model")
+            .select("*")
+            .eq("id", version.data[0]["model_id"])
+            .execute()
+        )
+        return model.data[0] if model.data else None
+
+    def save_alert_event(self, *, model_version_id, kind, metric, detail):
+        alert_id = f"alrt_{uuid.uuid4().hex}"
+        self.client.table("alert_event").insert(
+            {
+                "id": alert_id,
+                "model_version_id": model_version_id,
+                "kind": kind,
+                "metric": metric,
+                "detail": detail,
+            }
+        ).execute()
+        return alert_id
+
+    def update_alert_event(self, *, alert_event_id, emailed_at):
+        self.client.table("alert_event").update({"emailed_at": emailed_at}).eq(
+            "id", alert_event_id
+        ).execute()
+
+    def find_alert_events(self, *, model_version_id):
+        result = (
+            self.client.table("alert_event")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return result.data or []

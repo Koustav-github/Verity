@@ -36,6 +36,12 @@ class FakeTable:
         self._payload = payload
         return self
 
+    def upsert(self, payload, on_conflict=None):
+        self._verb = "upsert"
+        self._payload = payload
+        self._on_conflict = on_conflict
+        return self
+
     def eq(self, column, value):
         self._filters.append((column, value))
         return self
@@ -300,6 +306,7 @@ def test_create_model_inserts_a_row_and_returns_its_id():
                 "name": "fraud-classifier",
                 "model_class": "LogisticRegression",
                 "task_type": "classification",
+                "alert_email": None,
             },
         )
     ]
@@ -599,3 +606,160 @@ def test_find_production_version_by_name_resolves_the_model_then_its_live_versio
     store = SupabaseMetadataStore(client=fake_client)
 
     assert store.find_production_version_by_name(user_id="u_1", name="fraud")["id"] == "mv_2"
+
+
+def test_create_model_persists_the_alert_email_when_given():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.create_model(
+        user_id="u_1", name="fraud", model_class="sklearn",
+        task_type="classification", alert_email="ops@example.com",
+    )
+
+    assert fake_client.calls[0][1]["alert_email"] == "ops@example.com"
+
+
+def test_create_model_omits_alert_email_when_not_given():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.create_model(user_id="u_1", name="fraud", model_class="sklearn", task_type="classification")
+
+    # Explicit None, not silently dropped: a fresh model legitimately has no configured
+    # recipient, and the column should say so rather than never having been written.
+    assert fake_client.calls[0][1]["alert_email"] is None
+
+
+def test_save_monitoring_config_persists_alert_thresholds_when_present():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.save_monitoring_config(
+        model_version_id="mv_1", eval_run_id="evr_1",
+        config={"metrics": ["request_count"], "eval_reference": {},
+               "alert_thresholds": {"error_rate_relative_increase": 0.5}},
+    )
+
+    inserted = fake_client.calls[0][1]
+    assert inserted["alert_thresholds"] == {"error_rate_relative_increase": 0.5}
+
+
+def test_save_monitoring_config_omits_alert_thresholds_when_absent():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.save_monitoring_config(
+        model_version_id="mv_1", eval_run_id="evr_1",
+        config={"metrics": ["request_count"], "eval_reference": {}},
+    )
+
+    assert "alert_thresholds" not in fake_client.calls[0][1]
+
+
+def test_find_telemetry_event_by_prediction_id_returns_none_when_unknown():
+    store = SupabaseMetadataStore(client=FakeSupabaseClient())
+
+    assert store.find_telemetry_event_by_prediction_id(prediction_id="pred_nope") is None
+
+
+def test_find_telemetry_event_by_prediction_id_finds_the_row():
+    fake_client = FakeSupabaseClient(
+        rows={"telemetry_event": [{"id": 1, "prediction_id": "pred_abc", "model_version_id": "mv_1"}]}
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    event = store.find_telemetry_event_by_prediction_id(prediction_id="pred_abc")
+
+    assert event["id"] == 1
+    assert event["model_version_id"] == "mv_1"
+
+
+def test_save_label_event_inserts_with_a_prefixed_id():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    label_id = store.save_label_event(telemetry_event_id=1, instance_index=0, actual={"y": 1})
+
+    assert label_id.startswith("lbl_")
+    assert fake_client.calls[0][0] == "label_event"
+
+
+def test_find_labeled_outcomes_joins_labels_to_their_recorded_predictions():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "telemetry_event": [
+                {
+                    "id": 1, "model_version_id": "mv_1",
+                    "prediction": {"predictions": [1, 0], "probabilities": [[0.1, 0.9], [0.8, 0.2]]},
+                }
+            ],
+            "label_event": [
+                {"telemetry_event_id": 1, "instance_index": 0, "actual": {"y": 1}},
+                {"telemetry_event_id": 1, "instance_index": 1, "actual": {"y": 0}},
+            ],
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    outcomes = store.find_labeled_outcomes(model_version_id="mv_1")
+
+    assert len(outcomes) == 2
+    assert outcomes[0] == {"y_true": 1, "y_pred": 1, "y_proba": [0.1, 0.9]}
+    assert outcomes[1] == {"y_true": 0, "y_pred": 0, "y_proba": [0.8, 0.2]}
+
+
+def test_find_model_by_version_returns_the_owning_models_alert_email():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "model_version": [{"id": "mv_1", "model_id": "mdl_1"}],
+            "model": [{"id": "mdl_1", "alert_email": "ops@example.com"}],
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    model = store.find_model_by_version(model_version_id="mv_1")
+
+    assert model["alert_email"] == "ops@example.com"
+
+
+def test_save_alert_event_inserts_with_a_prefixed_id():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    alert_id = store.save_alert_event(
+        model_version_id="mv_1", kind="systemic", metric="error_rate", detail={"recent": 0.3},
+    )
+
+    assert alert_id.startswith("alrt_")
+    inserted = fake_client.calls[0][1]
+    assert inserted["kind"] == "systemic"
+    assert inserted["detail"] == {"recent": 0.3}
+
+
+def test_update_alert_event_writes_emailed_at():
+    fake_client = FakeSupabaseClient()
+    store = SupabaseMetadataStore(client=fake_client)
+
+    store.update_alert_event(alert_event_id="alrt_1", emailed_at="2026-08-23T00:00:00+00:00")
+
+    assert fake_client.calls[0] == (
+        "alert_event", "update", {"emailed_at": "2026-08-23T00:00:00+00:00"}, [("id", "alrt_1")],
+    )
+
+
+def test_find_alert_events_returns_rows_for_the_version_newest_first():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "alert_event": [
+                {"id": "alrt_1", "model_version_id": "mv_1", "created_at": "2026-08-01T00:00:00Z"},
+                {"id": "alrt_2", "model_version_id": "mv_1", "created_at": "2026-08-02T00:00:00Z"},
+                {"id": "alrt_3", "model_version_id": "mv_2", "created_at": "2026-08-03T00:00:00Z"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    alerts = store.find_alert_events(model_version_id="mv_1")
+
+    assert [a["id"] for a in alerts] == ["alrt_2", "alrt_1"]
