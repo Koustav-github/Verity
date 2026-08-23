@@ -231,7 +231,9 @@ async def predict(
         )
 
     _record(sink, version["id"], started, body, prediction, None, prediction_id)
-    return {**prediction, "prediction_id": prediction_id}
+    if isinstance(prediction, dict):
+        return {**prediction, "prediction_id": prediction_id}
+    return {"prediction": prediction, "prediction_id": prediction_id}
 
 
 def _record(sink, model_version_id, started, inputs, prediction, exc, prediction_id):

@@ -609,15 +609,28 @@ accumulating a duplicate that would double-count in the next quality check), the
 runs once for the event's `model_version_id`, wrapped the same non-fatal way as the systemic
 call sites.
 
-**Named risk, not fixed here**: this route has no ownership check. A `prediction_id` is a
-128-bit `uuid4`, not otherwise exposed at rest, but anyone who obtains one can report an outcome
-against it with no verification they're the tenant who actually received that prediction. This
-is the same *class* of gap `/ingest`, `/telemetry`, and `/predict` already carry by a standing,
-already-reasoned decision — no route in the app has auth until V1.5, and securing one while that
-stands would be theatre. It is called out specifically here, though, because this route feeds
-directly into Falcon's alerting signal: a leaked `prediction_id` lets someone inject a fabricated
-label that either suppresses a real alert or manufactures a false one, a sharper consequence than
-a bad `/telemetry` event merely skewing a summary stat.
+**Named risk, not fixed here**: this route has no ownership check. But the exposure does **not**
+depend on leaking someone else's `prediction_id` — `/predict` (`main.py:187-234`) is equally
+unauthenticated on the same app, so an attacker can mint their own legitimate-looking
+`prediction_id` for free by calling `/predict` against the target model, then report any outcome
+they like against it via this route. No leak is required at all. This is the same *class* of gap
+`/ingest`, `/telemetry`, and `/predict` already carry by a standing, already-reasoned decision —
+no route in the app has auth until V1.5, and an ownership check on this route alone would be
+close to worthless anyway: it would only validate that a caller owns something they could
+trivially mint for themselves.
+
+It is called out specifically here, though, because this route feeds directly into Falcon's
+alerting signal, and **suppression is the sharper risk direction than manufacture**: an attacker
+reporting fabricated CORRECT outcomes to keep a genuinely degraded model's measured accuracy
+above threshold is silent and indistinguishable from a healthy model — worse than a false alarm,
+which is merely noisy and self-correcting (a human investigates, finds nothing, moves on). The
+actual mitigation is V1.5 auth on `/predict` — closing where a `prediction_id` can be minted at
+all — not a per-route check here.
+
+This consideration flips from "acceptable" to "must fix before V7 ships" the moment Falcon acts
+autonomously on its own signal (e.g. V7's retraining-recommendation trigger) — right now a human
+always reviews the alert first, which bounds the blast radius to wasted attention, never an
+automated action.
 
 ### 8.11 Notification — the row is truth, email is best-effort
 

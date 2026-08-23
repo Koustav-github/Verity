@@ -8,6 +8,26 @@ from agents.brain4.falcon.detect import (
     detect_systemic_anomaly,
 )
 
+TELEMETRY_QUERY_LIMIT = 10_000  # matches find_telemetry_events's own default; named explicitly
+                                  # so check_systemic can detect truncation rather than silently
+                                  # miscounting a busy model's baseline window
+
+# Incremented when check_systemic/check_quality catch an exception in their non-fatal
+# try/except — that contract must never break a caller, but a permanently broken
+# detector must not be silently indistinguishable from "all clear". Mirrors
+# server/serving/sink.py's TelemetrySink.dropped: a module-level counter for exactly
+# this kind of "something is silently failing, count it" case. No lock: unlike
+# TelemetrySink.dropped, which is written from multiple threads, check_systemic and
+# check_quality are called from request-handling contexts, so this level of simplicity
+# matches the codebase's own risk tolerance elsewhere.
+detection_errors = 0
+
+
+def _record_detection_error():
+    global detection_errors
+    detection_errors += 1
+
+
 # The V1 metric set, fixed. Falcon does not choose these per model — the README's V1 scope
 # for Falcon is exactly "request count, latency percentiles, error rate", and unlike Nat's
 # quality metrics there is nothing task-dependent about them: every served model has
@@ -80,7 +100,11 @@ def check_systemic(*, model_version_id, metadata_store, now_fn=None, notify_fn=N
     notify_fn = notify_fn or _default_notify
 
     try:
-        from telemetry import summarize
+        from telemetry import summarize  # server/telemetry.py — reachable because this only ever
+                                           # runs inside the server process (uvicorn's cwd, or
+                                           # pytest's pythonpath=[".", ".."]); a failure here is
+                                           # caught by this function's own try/except and counted
+                                           # by detection_errors above, not silent.
 
         now = now_fn()
         recent_since = now - _minutes(WINDOW_MINUTES)
@@ -90,8 +114,17 @@ def check_systemic(*, model_version_id, metadata_store, now_fn=None, notify_fn=N
         # with two different `since` values would make the "baseline" window also
         # include every "recent" event. One call over the full span, split here.
         events = metadata_store.find_telemetry_events(
-            model_version_id=model_version_id, since=_iso(baseline_since)
+            model_version_id=model_version_id, since=_iso(baseline_since),
+            limit=TELEMETRY_QUERY_LIMIT,
         )
+        if len(events) >= TELEMETRY_QUERY_LIMIT:
+            # Above roughly 5.5 sustained requests/second, ALL returned rows (ordered
+            # occurred_at descending, then limited) fall within the most recent
+            # WINDOW_MINUTES, so the Python-side split below would silently produce an
+            # empty baseline_events and make the check less likely to fire the busier a
+            # model gets — the opposite of intended. A limit-truncated window can't be
+            # trusted to represent the whole span, so bail out explicitly instead.
+            return None
         # Strict `>` for recent (not `>=`): an event occurring exactly at the
         # recent/baseline boundary is the last tick of the baseline window, not the
         # first of the recent one.
@@ -109,6 +142,7 @@ def check_systemic(*, model_version_id, metadata_store, now_fn=None, notify_fn=N
         )
         return anomaly
     except Exception:  # noqa: BLE001
+        _record_detection_error()
         return None
 
 
@@ -143,6 +177,7 @@ def check_quality(*, model_version_id, metadata_store, notify_fn=None):
         )
         return anomaly
     except Exception:  # noqa: BLE001
+        _record_detection_error()
         return None
 
 

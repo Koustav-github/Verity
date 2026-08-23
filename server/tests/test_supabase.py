@@ -46,6 +46,10 @@ class FakeTable:
         self._filters.append((column, value))
         return self
 
+    def in_(self, column, values):
+        self._filters.append((column, "in", list(values)))
+        return self
+
     def gte(self, column, value):
         self._gte = (column, value)
         return self
@@ -59,10 +63,19 @@ class FakeTable:
         return self
 
     def _matching_rows(self):
-        matches = [
-            row for row in self.rows
-            if all(row.get(col) == val for col, val in self._filters)
-        ]
+        def row_matches(row):
+            for filt in self._filters:
+                if len(filt) == 3:
+                    col, _op, values = filt
+                    if row.get(col) not in values:
+                        return False
+                else:
+                    col, val = filt
+                    if row.get(col) != val:
+                        return False
+            return True
+
+        matches = [row for row in self.rows if row_matches(row)]
         if self._gte is not None:
             column, value = self._gte
             matches = [row for row in matches if row.get(column) >= value]
@@ -707,6 +720,43 @@ def test_find_labeled_outcomes_joins_labels_to_their_recorded_predictions():
     assert len(outcomes) == 2
     assert outcomes[0] == {"y_true": 1, "y_pred": 1, "y_proba": [0.1, 0.9]}
     assert outcomes[1] == {"y_true": 0, "y_pred": 0, "y_proba": [0.8, 0.2]}
+
+
+def test_find_labeled_outcomes_excludes_labels_belonging_to_a_different_version_even_under_a_small_limit():
+    # label_event has more total rows (across two different model versions) than fit
+    # under a small limit, proving the correlation now genuinely scopes by version
+    # rather than relying on an arbitrary global slice of the whole table.
+    fake_client = FakeSupabaseClient(
+        rows={
+            "telemetry_event": [
+                {"id": 1, "model_version_id": "mv_1", "prediction": {"predictions": [1]}},
+            ],
+            "label_event": [
+                # Other versions' labels are listed FIRST on purpose: under the old,
+                # uncorrelated `.limit(limit)` over the whole label_event table, a
+                # small limit would consume its budget on these before ever reaching
+                # mv_1's own label below, silently starving mv_1 of labels it actually
+                # has. ids 2 and 3 belong to telemetry events that are not in mv_1's
+                # events_by_id at all.
+                {"telemetry_event_id": 2, "instance_index": 0, "actual": {"y": 0}},
+                {"telemetry_event_id": 3, "instance_index": 0, "actual": {"y": 0}},
+                {"telemetry_event_id": 1, "instance_index": 0, "actual": {"y": 1}},
+            ],
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    outcomes = store.find_labeled_outcomes(model_version_id="mv_1", limit=1)
+
+    assert len(outcomes) == 1
+    assert outcomes[0] == {"y_true": 1, "y_pred": 1, "y_proba": None}
+
+
+def test_find_labeled_outcomes_returns_empty_when_the_version_has_no_telemetry_events():
+    fake_client = FakeSupabaseClient(rows={"telemetry_event": [], "label_event": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_labeled_outcomes(model_version_id="mv_1") == []
 
 
 def test_find_model_by_version_returns_the_owning_models_alert_email():

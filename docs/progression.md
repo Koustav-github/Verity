@@ -278,15 +278,21 @@ the record is being maintained after the reboot
       V3 already earmarks for telemetry volume, not invented here); best-effort email only, no
       retry queue for a failed SES send.
     - **Security finding surfaced during implementation, deliberately not fixed:**
-      `POST /predictions/{prediction_id}/outcomes` has no ownership check — a `prediction_id` is
-      a 128-bit `uuid4` not otherwise exposed at rest, but anyone who obtains one can report an
-      outcome against it with no verification they received that prediction. Same class of gap
+      `POST /predictions/{prediction_id}/outcomes` has no ownership check. Crucially, this does
+      **not** depend on leaking anyone's `prediction_id`: `/predict` is equally unauthenticated,
+      so an attacker can mint their own `prediction_id` for free by calling `/predict` against
+      the target model, then report whatever outcome they like against it. Same class of gap
       `/ingest`, `/telemetry`, and `/predict` already carry by the standing, already-reasoned
-      decision that no route has auth until V1.5 — securing one while that stands would be
-      theatre. Called out specifically here because this route feeds directly into the alerting
-      signal: a leaked `prediction_id` lets someone inject a fabricated label that suppresses a
-      real alert or manufactures a false one, a sharper consequence than a bad `/telemetry` event
-      merely skewing a summary stat.
+      decision that no route has auth until V1.5 — securing this one route alone would be close
+      to worthless, since it'd only confirm a caller owns something trivially self-mintable.
+      Called out specifically here because this route feeds directly into the alerting signal,
+      and **suppression is the sharper risk than manufacture**: fabricating CORRECT outcomes to
+      hide a genuinely degraded model's accuracy is silent and indistinguishable from healthy —
+      worse than a false alarm, which is merely noisy and self-correcting. The real fix is V1.5
+      auth on `/predict` (closing where a `prediction_id` can be minted), not a check here. This
+      flips from "acceptable" to "must fix before V7 ships" once Falcon acts autonomously on its
+      own signal — today a human always reviews the alert first, bounding the blast radius to
+      wasted attention rather than an automated action.
     Still not automated past here: input drift detection (a separate mechanism — needs a
     distributional distance metric that doesn't exist yet), autonomous retraining (a human
     decides, always), the `agent_run` audit trail, comparative promotion gating, and anything

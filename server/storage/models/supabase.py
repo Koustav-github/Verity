@@ -257,14 +257,17 @@ class SupabaseMetadataStore:
             self.client.table("telemetry_event")
             .select("*")
             .eq("model_version_id", model_version_id)
+            .limit(limit)
             .execute()
         ).data or []
         events_by_id = {event["id"]: event for event in events}
+        if not events_by_id:
+            return []
 
         labels = (
             self.client.table("label_event")
             .select("*")
-            .limit(limit)
+            .in_("telemetry_event_id", list(events_by_id.keys()))
             .execute()
         ).data or []
 

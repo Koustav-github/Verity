@@ -78,6 +78,22 @@ def test_predict_forwards_the_body_to_the_live_container():
     assert transport.calls[0]["json"] == {"instances": [[1.0, 2.0]]}
 
 
+def test_predict_survives_a_non_dict_json_body_from_the_container():
+    # The generated serving template always returns a dict today, so `{**prediction,
+    # "prediction_id": ...}` is safe in practice — but a non-dict body (e.g. a bare
+    # list) would raise TypeError -> an unhandled 500, AFTER telemetry has already been
+    # recorded as "ok". The route must degrade gracefully instead.
+    transport = FakeTransport(payload=[1, 2, 3])
+    client = _client(FakeStore(VERSION, LIVE), FakeSink(), transport)
+
+    response = client.post("/users/u_1/models/fraud/predict", json={"instances": [[1.0]]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["prediction"] == [1, 2, 3]
+    assert body["prediction_id"].startswith("pred_")
+
+
 def test_predict_404s_distinctly_when_the_model_name_is_unknown():
     client = _client(FakeStore(None, None), FakeSink(), FakeTransport())
 

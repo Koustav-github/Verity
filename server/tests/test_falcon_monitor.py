@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+import agents.brain4.falcon.monitor as monitor_module
 from agents.brain4.falcon.detect import MIN_LABELS, RELATIVE_INCREASE_THRESHOLD, WINDOW_MIN_EVENTS
 from agents.brain4.falcon.monitor import (
     METRICS,
+    TELEMETRY_QUERY_LIMIT,
     build_alert_thresholds,
     build_eval_reference,
     check_quality,
@@ -203,6 +205,25 @@ def test_check_systemic_swallows_a_raising_notify_fn():
     )
 
 
+def test_check_systemic_bails_out_when_the_query_result_hits_the_limit():
+    # A busy model can return a full TELEMETRY_QUERY_LIMIT worth of rows within just the
+    # `recent` half of the window (find_telemetry_events orders occurred_at descending
+    # before applying limit), making baseline_events silently empty after the Python-side
+    # split. A limit-truncated window can't be trusted to represent the whole span, so
+    # check_systemic must bail out explicitly rather than miscount a busy model's baseline.
+    store = FakeMetadataStore()
+    store.events = _events_in_window(15, 0, TELEMETRY_QUERY_LIMIT, status="error")
+    notified = []
+
+    result = check_systemic(
+        model_version_id="mv_1", metadata_store=store,
+        now_fn=lambda: FIXED_NOW, notify_fn=lambda **kwargs: notified.append(kwargs),
+    )
+
+    assert result is None
+    assert notified == []
+
+
 def test_check_quality_is_a_noop_below_the_minimum_label_count():
     store = FakeMetadataStore()
     store.monitoring_configs["mv_1"] = {
@@ -258,3 +279,36 @@ def test_check_quality_is_a_noop_when_the_version_has_no_monitoring_config():
     )
 
     assert notified == []
+
+
+# --- detection_errors: a permanently broken detector must not be silently invisible ---
+
+class RaisingStore:
+    """A metadata_store whose every method blows up — stands in for a permanently
+    broken detector (bad config, import failure, schema drift), the case the non-fatal
+    try/except is required to swallow but that must not be indistinguishable from
+    'checked, found nothing wrong'."""
+
+    def find_telemetry_events(self, *, model_version_id, since, limit=10_000):
+        raise RuntimeError("schema drift")
+
+    def find_monitoring_config(self, *, model_version_id):
+        raise RuntimeError("schema drift")
+
+
+def test_check_systemic_increments_detection_errors_when_it_catches_an_exception():
+    before = monitor_module.detection_errors
+
+    result = check_systemic(model_version_id="mv_1", metadata_store=RaisingStore(), now_fn=lambda: FIXED_NOW)
+
+    assert result is None
+    assert monitor_module.detection_errors == before + 1
+
+
+def test_check_quality_increments_detection_errors_when_it_catches_an_exception():
+    before = monitor_module.detection_errors
+
+    result = check_quality(model_version_id="mv_1", metadata_store=RaisingStore())
+
+    assert result is None
+    assert monitor_module.detection_errors == before + 1
