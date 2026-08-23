@@ -288,3 +288,115 @@ def test_fargate_subnets_default_to_empty_list_when_not_provided_and_env_unset(m
     )
 
     assert runtime.subnets == []
+
+
+class FakeEcsClientForRun:
+    def __init__(self, task_statuses=None):
+        self.registered = []
+        self.run_task_calls = []
+        self.describe_calls = 0
+        # Each describe_tasks call pops the next status; last one repeats.
+        self._statuses = list(task_statuses or ["RUNNING"])
+
+    def register_task_definition(self, **kwargs):
+        self.registered.append(kwargs)
+        return {"taskDefinition": {"taskDefinitionArn": "arn:aws:ecs:task-def:1"}}
+
+    def run_task(self, **kwargs):
+        self.run_task_calls.append(kwargs)
+        return {"tasks": [{"taskArn": "arn:aws:ecs:task:abc", "lastStatus": "PROVISIONING"}]}
+
+    def describe_tasks(self, *, cluster, tasks):
+        self.describe_calls += 1
+        status = self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
+        return {
+            "tasks": [
+                {
+                    "taskArn": tasks[0],
+                    "lastStatus": status,
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "networkInterfaceId", "value": "eni-xyz"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+
+class FakeEc2ClientForRun:
+    def describe_network_interfaces(self, *, NetworkInterfaceIds):
+        assert NetworkInterfaceIds == ["eni-xyz"]
+        return {"NetworkInterfaces": [{"Association": {"PublicIp": "203.0.113.10"}}]}
+
+
+def _fargate_runtime_for_run(ecs_client=None, ec2_client=None):
+    return FargateRuntime(
+        region="us-east-1",
+        cluster="verity-cluster",
+        ecr_repository_uri=ECR_REPO,
+        execution_role_arn="arn:aws:iam::504509954111:role/verity-ecs-task-execution-role",
+        subnets=["subnet-a", "subnet-b"],
+        security_group="sg-abc",
+        log_group="/ecs/verity-model",
+        docker_runtime=FakeDockerRuntimeForFargate(),
+        ecs_client=ecs_client or FakeEcsClientForRun(),
+        ecr_client=FakeEcrClient(),
+        ec2_client=ec2_client or FakeEc2ClientForRun(),
+    )
+
+
+def test_fargate_run_registers_a_task_definition_naming_the_pushed_image():
+    ecs = FakeEcsClientForRun()
+    runtime = _fargate_runtime_for_run(ecs_client=ecs)
+
+    runtime.run(tag="verity-model:mv_1")
+
+    registered = ecs.registered[0]
+    assert registered["family"] == "verity-model"
+    assert registered["requiresCompatibilities"] == ["FARGATE"]
+    assert registered["cpu"] == "256"
+    assert registered["memory"] == "512"
+    assert registered["executionRoleArn"] == "arn:aws:iam::504509954111:role/verity-ecs-task-execution-role"
+    container_def = registered["containerDefinitions"][0]
+    assert container_def["image"] == f"{ECR_REPO}:mv_1"
+    assert container_def["portMappings"] == [{"containerPort": 8000, "protocol": "tcp"}]
+    assert container_def["logConfiguration"]["options"]["awslogs-group"] == "/ecs/verity-model"
+
+
+def test_fargate_run_launches_with_a_public_ip_in_the_configured_network():
+    ecs = FakeEcsClientForRun()
+    runtime = _fargate_runtime_for_run(ecs_client=ecs)
+
+    runtime.run(tag="verity-model:mv_1")
+
+    launch = ecs.run_task_calls[0]
+    assert launch["cluster"] == "verity-cluster"
+    assert launch["launchType"] == "FARGATE"
+    network = launch["networkConfiguration"]["awsvpcConfiguration"]
+    assert network["subnets"] == ["subnet-a", "subnet-b"]
+    assert network["securityGroups"] == ["sg-abc"]
+    assert network["assignPublicIp"] == "ENABLED"
+
+
+def test_fargate_run_polls_until_running_then_resolves_the_public_ip():
+    ecs = FakeEcsClientForRun(task_statuses=["PROVISIONING", "PENDING", "RUNNING"])
+    runtime = _fargate_runtime_for_run(ecs_client=ecs)
+
+    result = runtime.run(tag="verity-model:mv_1")
+
+    assert ecs.describe_calls == 3
+    assert result == {
+        "container_id": "arn:aws:ecs:task:abc",
+        "endpoint_url": "http://203.0.113.10:8000",
+        "host_port": None,
+    }
+
+
+def test_fargate_run_gives_up_if_the_task_never_reaches_running():
+    ecs = FakeEcsClientForRun(task_statuses=["PROVISIONING"])
+    runtime = _fargate_runtime_for_run(ecs_client=ecs)
+
+    with pytest.raises(ContainerRuntimeError):
+        runtime.run(tag="verity-model:mv_1", poll_timeout=0.2, poll_interval=0.05)

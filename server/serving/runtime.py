@@ -162,6 +162,92 @@ class FargateRuntime:
         except Exception as exc:  # noqa: BLE001
             raise ContainerRuntimeError(f"failed to push image to ECR: {exc}") from exc
 
+    def run(self, *, tag, poll_timeout=120.0, poll_interval=3.0):
+        try:
+            version_tag = tag.split(":", 1)[1]
+            image_uri = f"{self.ecr_repository_uri}:{version_tag}"
+
+            task_def = self.ecs.register_task_definition(
+                family="verity-model",
+                networkMode="awsvpc",
+                requiresCompatibilities=["FARGATE"],
+                cpu="256",
+                memory="512",
+                executionRoleArn=self.execution_role_arn,
+                containerDefinitions=[
+                    {
+                        "name": "verity-model",
+                        "image": image_uri,
+                        "portMappings": [{"containerPort": 8000, "protocol": "tcp"}],
+                        "logConfiguration": {
+                            "logDriver": "awslogs",
+                            "options": {
+                                "awslogs-group": self.log_group,
+                                "awslogs-region": self.region,
+                                "awslogs-stream-prefix": "verity",
+                            },
+                        },
+                    }
+                ],
+            )
+            task_def_arn = task_def["taskDefinition"]["taskDefinitionArn"]
+
+            launched = self.ecs.run_task(
+                cluster=self.cluster,
+                taskDefinition=task_def_arn,
+                launchType="FARGATE",
+                count=1,
+                networkConfiguration={
+                    "awsvpcConfiguration": {
+                        "subnets": self.subnets,
+                        "securityGroups": [self.security_group],
+                        "assignPublicIp": "ENABLED",
+                    }
+                },
+            )
+            task_arn = launched["tasks"][0]["taskArn"]
+
+            public_ip = self._wait_for_public_ip(
+                task_arn, timeout=poll_timeout, interval=poll_interval
+            )
+            return {
+                "container_id": task_arn,
+                "endpoint_url": f"http://{public_ip}:8000",
+                "host_port": None,
+            }
+        except ContainerRuntimeError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ContainerRuntimeError(f"Fargate task failed to start: {exc}") from exc
+
+    def _wait_for_public_ip(self, task_arn, *, timeout, interval):
+        deadline = time.monotonic() + timeout
+        while True:
+            described = self.ecs.describe_tasks(cluster=self.cluster, tasks=[task_arn])
+            task = described["tasks"][0]
+            if task["lastStatus"] == "RUNNING":
+                eni_id = self._eni_id_from(task)
+                interfaces = self.ec2.describe_network_interfaces(
+                    NetworkInterfaceIds=[eni_id]
+                )
+                return interfaces["NetworkInterfaces"][0]["Association"]["PublicIp"]
+            if time.monotonic() >= deadline:
+                raise ContainerRuntimeError(
+                    f"Fargate task {task_arn} did not reach RUNNING within {timeout}s "
+                    f"(last status: {task['lastStatus']})"
+                )
+            time.sleep(interval)
+
+    @staticmethod
+    def _eni_id_from(task):
+        for attachment in task.get("attachments", []):
+            if attachment["type"] != "ElasticNetworkInterface":
+                continue
+            for detail in attachment["details"]:
+                if detail["name"] == "networkInterfaceId":
+                    return detail["value"]
+        raise ContainerRuntimeError(f"task {task['taskArn']} has no network interface attached")
+
 
 def wait_healthy(*, url, timeout=60.0, client=None, interval=0.5):
     """Poll /health until it answers 200 or the timeout expires.
