@@ -135,8 +135,13 @@ def _default_render(**kwargs):
 
 
 def _default_runtime():
-    from serving.runtime import DockerRuntime
+    import os
 
+    from serving.runtime import DockerRuntime, FargateRuntime
+
+    choice = os.environ.get("VERITY_CONTAINER_RUNTIME", "docker")
+    if choice == "fargate":
+        return FargateRuntime()
     return DockerRuntime()
 
 
