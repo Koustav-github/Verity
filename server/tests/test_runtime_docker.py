@@ -268,3 +268,23 @@ def test_fargate_build_tags_and_pushes_the_image_under_the_ecr_uri():
 
     assert docker_runtime.client.tag_calls == [{"repository": ECR_REPO, "tag": "mv_1"}]
     assert docker_runtime.client.push_calls == [{"repository": ECR_REPO, "tag": "mv_1"}]
+
+
+def test_fargate_subnets_default_to_empty_list_when_not_provided_and_env_unset(monkeypatch):
+    monkeypatch.delenv("VERITY_FARGATE_SUBNETS", raising=False)
+
+    runtime = FargateRuntime(
+        region="us-east-1",
+        cluster="verity-cluster",
+        ecr_repository_uri=ECR_REPO,
+        execution_role_arn="arn:aws:iam::504509954111:role/verity-ecs-task-execution-role",
+        subnets=None,
+        security_group="sg-abc",
+        log_group="/ecs/verity-model",
+        docker_runtime=FakeDockerRuntimeForFargate(),
+        ecs_client=object(),
+        ecr_client=FakeEcrClient(),
+        ec2_client=object(),
+    )
+
+    assert runtime.subnets == []

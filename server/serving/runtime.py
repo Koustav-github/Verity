@@ -94,7 +94,8 @@ class FargateRuntime:
         self.cluster = cluster or os.environ.get("VERITY_FARGATE_CLUSTER", "verity-cluster")
         self.ecr_repository_uri = ecr_repository_uri or os.environ["VERITY_FARGATE_ECR_URI"]
         self.execution_role_arn = execution_role_arn or os.environ["VERITY_FARGATE_EXECUTION_ROLE_ARN"]
-        self.subnets = subnets or os.environ.get("VERITY_FARGATE_SUBNETS", "").split(",")
+        subnet_str = os.environ.get("VERITY_FARGATE_SUBNETS", "")
+        self.subnets = subnets or (subnet_str.split(",") if subnet_str else [])
         self.security_group = security_group or os.environ["VERITY_FARGATE_SECURITY_GROUP"]
         self.log_group = log_group or os.environ.get("VERITY_FARGATE_LOG_GROUP", "/ecs/verity-model")
 
