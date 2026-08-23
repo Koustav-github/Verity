@@ -117,6 +117,7 @@ async def ingest(
     fixture: UploadFile | None = File(None),
     fixture_descriptor: str | None = Form(None),
     environment: str | None = Form(None),
+    alert_email: str | None = Form(None),
     build_artifact_fn: Callable = Depends(get_build_artifact),
 ):
     payload = await artifact.read()
@@ -134,6 +135,7 @@ async def ingest(
         # Absent for uploads from an SDK older than api-fication. The image then falls
         # back to a default Python and an empty pin set, which is worse but not fatal.
         environment=json.loads(environment) if environment else None,
+        alert_email=alert_email,
     )
 
 @app.post("/telemetry")

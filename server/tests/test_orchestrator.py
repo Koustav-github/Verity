@@ -686,3 +686,15 @@ def test_a_failing_deploy_does_not_fail_a_promotion_that_succeeded():
     # lie about what happened — the same reasoning as _configure_monitoring.
     assert result["status"] == "production"
     assert result["deployment"] is None
+
+
+def test_alert_email_is_forwarded_to_register_fn():
+    captured = {}
+
+    def recording_register(**kwargs):
+        captured.update(kwargs)
+        return {"model_id": "mdl_123", "status": "pending", "archived_model_version_id": None}
+
+    _build(register_fn=recording_register, alert_email="ops@example.com")
+
+    assert captured["alert_email"] == "ops@example.com"

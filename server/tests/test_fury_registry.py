@@ -18,12 +18,12 @@ class FakeMetadataStore:
     def find_model_version_by_hash(self, *, model_id, sha256):
         return self.versions.get((model_id, sha256))
 
-    def create_model(self, *, user_id, name, model_class, task_type):
+    def create_model(self, *, user_id, name, model_class, task_type, alert_email=None):
         model_id = f"mdl_{self._next_model_id}"
         self._next_model_id += 1
         self.created_models.append(
             {"id": model_id, "user_id": user_id, "name": name,
-             "model_class": model_class, "task_type": task_type}
+             "model_class": model_class, "task_type": task_type, "alert_email": alert_email}
         )
         self.models[(user_id, name)] = {"id": model_id}
         return model_id
@@ -88,6 +88,7 @@ def test_register_creates_a_model_on_the_first_upload_under_a_new_name():
         {
             "id": result["model_id"], "user_id": "u_1", "name": "fraud-classifier",
             "model_class": "LogisticRegression", "task_type": "classification",
+            "alert_email": None,
         }
     ]
 
@@ -192,3 +193,16 @@ def test_register_with_a_passing_verdict_archives_the_current_production_version
     assert store.archived == ["mv_old"]
     assert result["archived_model_version_id"] == "mv_old"
     assert store.promotions == [("mv_new", "evr_1")]
+
+
+def test_register_creates_a_new_model_with_the_given_alert_email():
+    store = FakeMetadataStore()
+
+    register(
+        user_id="u_1", name="fraud", model_version_id="mv_1",
+        manifest={"model_class": "sklearn", "task_type": "classification"},
+        verdict=None, eval_run_id=None, metadata_store=store,
+        alert_email="ops@example.com",
+    )
+
+    assert store.created_models[0]["alert_email"] == "ops@example.com"

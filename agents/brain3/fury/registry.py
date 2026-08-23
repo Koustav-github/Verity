@@ -12,7 +12,7 @@ def find_existing(*, user_id, sha256, name, metadata_store):
     return metadata_store.find_model_version_by_hash(model_id=model["id"], sha256=sha256)
 
 
-def register(*, user_id, name, model_version_id, manifest, verdict, eval_run_id, metadata_store):
+def register(*, user_id, name, model_version_id, manifest, verdict, eval_run_id, metadata_store, alert_email=None):
     """Link this version to its model's identity, and promote it if it earned that.
 
     Identity linking happens unconditionally — a pending or failed version is still
@@ -26,8 +26,12 @@ def register(*, user_id, name, model_version_id, manifest, verdict, eval_run_id,
             name=name,
             model_class=manifest.get("model_class"),
             task_type=manifest.get("task_type"),
+            alert_email=alert_email,
         )
     else:
+        # An existing model's alert_email is not updated by a later upload — this is
+        # about who is notified for a *model*, decided once at its creation, not a
+        # setting a later version's upload can silently change.
         model_id = model["id"]
 
     metadata_store.link_model_version(model_version_id=model_version_id, model_id=model_id)

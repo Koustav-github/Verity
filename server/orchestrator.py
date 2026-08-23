@@ -22,6 +22,7 @@ def build_artifact(
     fixture_payload=None,
     fixture_descriptor=None,
     environment=None,
+    alert_email=None,
 ):
     identify_fn = identify_fn or _default_identify
     introspect_fn = introspect_fn or _default_introspect
@@ -116,6 +117,7 @@ def build_artifact(
         verdict=verdict,
         eval_run_id=eval_run_id,
         metadata_store=metadata_store,
+        alert_email=alert_email,
     )
 
     monitoring_config = None

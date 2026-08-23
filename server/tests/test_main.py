@@ -385,3 +385,23 @@ def test_ingest_telemetry_calls_check_systemic_for_each_distinct_model_version()
         app.dependency_overrides.clear()
 
     assert sorted(calls) == ["mv_1", "mv_2"]
+
+
+def test_ingest_forwards_the_alert_email_to_the_orchestrator():
+    captured = {}
+
+    def fake_build_artifact(**kwargs):
+        captured.update(kwargs)
+        return {"model_version_id": "mv_1"}
+
+    app.dependency_overrides[get_build_artifact] = lambda: fake_build_artifact
+    try:
+        TestClient(app).post(
+            "/ingest",
+            files={"artifact": ("artifact", b"bytes")},
+            data={"user_id": "u_1", "name": "m", "sha256": "abc", "alert_email": "ops@example.com"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert captured["alert_email"] == "ops@example.com"
