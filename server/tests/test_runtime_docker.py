@@ -79,7 +79,11 @@ def test_docker_runtime_reads_the_assigned_host_port_back_after_starting():
 
     result = runtime.run(tag="verity-model:mv_1")
 
-    assert result == {"container_id": "container-abc", "host_port": 49312}
+    assert result == {
+        "container_id": "container-abc",
+        "host_port": 49312,
+        "endpoint_url": "http://localhost:49312",
+    }
     # Ephemeral port: Docker assigns, we read back. No port registry to drift.
     assert fake.containers.run_kwargs["ports"] == {"8000/tcp": None}
     assert fake.containers.run_kwargs["detach"] is True
@@ -149,9 +153,7 @@ def test_a_real_image_builds_starts_and_answers_health(tmp_path):
     runtime.build(context_dir=str(tmp_path), tag=tag)
     started = runtime.run(tag=tag)
     try:
-        assert wait_healthy(
-            url=f"http://localhost:{started['host_port']}/health", timeout=90.0
-        )
+        assert wait_healthy(url=f"{started['endpoint_url']}/health", timeout=90.0)
     finally:
         runtime.stop(container_id=started["container_id"])
 

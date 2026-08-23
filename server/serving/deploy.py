@@ -50,7 +50,7 @@ def deploy(
 
         started = runtime.run(tag=tag)
         container_id = started["container_id"]
-        endpoint_url = f"http://localhost:{started['host_port']}"
+        endpoint_url = started["endpoint_url"]
 
         if not wait_healthy_fn(
             url=f"{endpoint_url}/health", timeout=HEALTH_TIMEOUT_SECONDS
@@ -64,7 +64,7 @@ def deploy(
             deployment_id=deployment_id,
             status="live",
             container_id=container_id,
-            host_port=started["host_port"],
+            host_port=started.get("host_port"),
             endpoint_url=endpoint_url,
         )
     except Exception as exc:
@@ -91,7 +91,7 @@ def deploy(
     return {
         "id": deployment_id,
         "status": "live",
-        "host_port": started["host_port"],
+        "host_port": started.get("host_port"),
         "endpoint_url": endpoint_url,
         "image_tag": tag,
     }

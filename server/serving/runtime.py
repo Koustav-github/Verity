@@ -48,7 +48,12 @@ class DockerRuntime:
             )
             container.reload()
             binding = container.ports["8000/tcp"][0]
-            return {"container_id": container.id, "host_port": int(binding["HostPort"])}
+            host_port = int(binding["HostPort"])
+            return {
+                "container_id": container.id,
+                "host_port": host_port,
+                "endpoint_url": f"http://localhost:{host_port}",
+            }
         except Exception as exc:  # noqa: BLE001
             raise ContainerRuntimeError(f"container failed to start: {exc}") from exc
 

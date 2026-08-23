@@ -44,7 +44,7 @@ class FakeRuntime:
         if self.run_error:
             raise self.run_error
         self.ran.append(tag)
-        return {"container_id": "c_1", "host_port": 49312}
+        return {"container_id": "c_1", "host_port": 49312, "endpoint_url": "http://localhost:49312"}
 
     def stop(self, *, container_id):
         self.stopped.append(container_id)
