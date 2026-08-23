@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,6 +67,16 @@ def get_systemic_check():
 
     def run(model_version_id):
         check_systemic(model_version_id=model_version_id, metadata_store=get_metadata_store())
+
+    return run
+
+
+@lru_cache
+def get_quality_check():
+    from agents.brain4.falcon.monitor import check_quality
+
+    def run(model_version_id):
+        check_quality(model_version_id=model_version_id, metadata_store=get_metadata_store())
 
     return run
 
@@ -191,6 +202,11 @@ async def predict(
             f"{name!r} is promoted but not deployed — check its deployment row for the reason",
         )
 
+    # Minted here, not read back from the DB insert: TelemetrySink queues writes, so the
+    # database-assigned bigint id does not exist yet when this response is returned. A
+    # customer reporting a delayed outcome needs something to correlate against right now.
+    prediction_id = f"pred_{uuid.uuid4().hex}"
+
     started = time.perf_counter()
     try:
         response = transport.post(
@@ -198,16 +214,16 @@ async def predict(
         )
         prediction = response.json()
     except Exception as exc:  # noqa: BLE001 - the container is out of our process
-        _record(sink, version["id"], started, body, None, exc)
+        _record(sink, version["id"], started, body, None, exc, prediction_id)
         raise HTTPException(
             502, f"model container did not answer: {type(exc).__name__}"
         )
 
-    _record(sink, version["id"], started, body, prediction, None)
-    return prediction
+    _record(sink, version["id"], started, body, prediction, None, prediction_id)
+    return {**prediction, "prediction_id": prediction_id}
 
 
-def _record(sink, model_version_id, started, inputs, prediction, exc):
+def _record(sink, model_version_id, started, inputs, prediction, exc, prediction_id):
     """Telemetry can never be the reason a prediction fails — Falcon's governing rule,
     applied to the proxy. This is also the first place Verity sees production *inputs*,
     which is what makes drift detection possible at all."""
@@ -215,6 +231,7 @@ def _record(sink, model_version_id, started, inputs, prediction, exc):
         sink.record(
             {
                 "model_version_id": model_version_id,
+                "prediction_id": prediction_id,
                 "occurred_at": datetime.now(timezone.utc).isoformat(),
                 "status": "ok" if exc is None else "error",
                 "latency_ms": (time.perf_counter() - started) * 1000,
@@ -225,3 +242,48 @@ def _record(sink, model_version_id, started, inputs, prediction, exc):
         )
     except Exception:  # noqa: BLE001
         pass
+
+
+class Outcome(BaseModel):
+    index: int
+    actual: object
+
+
+class OutcomeBatch(BaseModel):
+    # Mirrors TelemetryBatch's cap: a bound on the blast radius of a single request.
+    outcomes: list[Outcome] = Field(default=..., max_length=1000)
+
+
+@app.post("/predictions/{prediction_id}/outcomes")
+async def report_outcomes(
+    prediction_id: str,
+    batch: OutcomeBatch,
+    metadata_store=Depends(get_metadata_store),
+    quality_check=Depends(get_quality_check),
+):
+    event = metadata_store.find_telemetry_event_by_prediction_id(prediction_id=prediction_id)
+    if event is None:
+        raise HTTPException(404, f"no prediction found for {prediction_id!r}")
+
+    predictions = (event.get("prediction") or {}).get("predictions") or []
+    # Validated as a full pass over batch.outcomes before any save_label_event call, so
+    # a batch containing one bad index writes nothing rather than partially recording.
+    for outcome in batch.outcomes:
+        if outcome.index < 0 or outcome.index >= len(predictions):
+            raise HTTPException(
+                422,
+                f"index {outcome.index} is outside this prediction's batch of {len(predictions)}",
+            )
+
+    for outcome in batch.outcomes:
+        metadata_store.save_label_event(
+            telemetry_event_id=event["id"], instance_index=outcome.index,
+            actual={"y": outcome.actual},
+        )
+
+    try:
+        quality_check(event["model_version_id"])
+    except Exception:  # noqa: BLE001 - detection failing must not fail label reporting
+        pass
+
+    return {"recorded": len(batch.outcomes)}

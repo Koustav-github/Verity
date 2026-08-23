@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from main import app, get_metadata_store, get_predict_transport, get_telemetry_sink
+from main import app, get_metadata_store, get_predict_transport, get_quality_check, get_telemetry_sink
 from serving.sink import TelemetrySink
 
 
@@ -237,3 +237,82 @@ def test_flush_with_no_events_never_calls_detect_fn():
     sink.flush()
 
     assert calls == []
+
+
+# --- prediction_id and the outcomes route -------------------------------------------
+
+def test_predict_returns_a_prediction_id():
+    client = _client(FakeStore(VERSION, LIVE), FakeSink(), FakeTransport())
+
+    body = client.post(
+        "/users/u_1/models/fraud/predict", json={"instances": [[1.0, 2.0]]}
+    ).json()
+
+    assert body["prediction_id"].startswith("pred_")
+
+
+def test_the_prediction_id_is_recorded_on_the_telemetry_event():
+    sink = FakeSink()
+    client = _client(FakeStore(VERSION, LIVE), sink, FakeTransport())
+
+    body = client.post(
+        "/users/u_1/models/fraud/predict", json={"instances": [[1.0]]}
+    ).json()
+
+    assert sink.events[0]["prediction_id"] == body["prediction_id"]
+
+
+class FakeOutcomeStore:
+    def __init__(self, event=None):
+        self.event = event
+        self.saved_labels = []
+        self.checked = []
+
+    def find_telemetry_event_by_prediction_id(self, *, prediction_id):
+        return self.event
+
+    def save_label_event(self, *, telemetry_event_id, instance_index, actual):
+        self.saved_labels.append(
+            {"telemetry_event_id": telemetry_event_id, "instance_index": instance_index, "actual": actual}
+        )
+        return "lbl_1"
+
+
+def test_outcomes_404s_for_an_unknown_prediction_id():
+    client = _client(FakeOutcomeStore(event=None), FakeSink(), FakeTransport())
+
+    response = client.post(
+        "/predictions/pred_nope/outcomes", json={"outcomes": [{"index": 0, "actual": 1}]}
+    )
+
+    assert response.status_code == 404
+
+
+def test_outcomes_422s_for_an_index_outside_the_recorded_predictions():
+    event = {"id": 1, "model_version_id": "mv_1", "prediction": {"predictions": [1]}}
+    client = _client(FakeOutcomeStore(event=event), FakeSink(), FakeTransport())
+
+    response = client.post(
+        "/predictions/pred_abc/outcomes", json={"outcomes": [{"index": 5, "actual": 1}]}
+    )
+
+    assert response.status_code == 422
+
+
+def test_a_valid_outcome_is_saved_and_triggers_the_quality_check():
+    event = {"id": 1, "model_version_id": "mv_1", "prediction": {"predictions": [1]}}
+    store = FakeOutcomeStore(event=event)
+    app.dependency_overrides[get_metadata_store] = lambda: store
+    app.dependency_overrides[get_quality_check] = lambda: (
+        lambda model_version_id: store.checked.append(model_version_id)
+    )
+    try:
+        response = TestClient(app).post(
+            "/predictions/pred_abc/outcomes", json={"outcomes": [{"index": 0, "actual": 1}]}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert store.saved_labels[0]["telemetry_event_id"] == 1
+    assert store.checked == ["mv_1"]
