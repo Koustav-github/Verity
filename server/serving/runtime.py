@@ -169,6 +169,8 @@ class FargateRuntime:
                     raise ContainerRuntimeError(
                         f"ECR push failed: {entry.get('error') or entry.get('errorDetail')}"
                     )
+        except ContainerRuntimeError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ContainerRuntimeError(f"failed to push image to ECR: {exc}") from exc
 

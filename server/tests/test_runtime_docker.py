@@ -286,8 +286,13 @@ def test_fargate_build_raises_when_the_ecr_push_log_reports_an_error():
     )
     runtime = _fargate_runtime(docker_runtime=docker_runtime)
 
-    with pytest.raises(ContainerRuntimeError, match="ECR push failed"):
+    with pytest.raises(ContainerRuntimeError) as excinfo:
         runtime.build(context_dir="/tmp/ctx", tag="verity-model:mv_1")
+
+    # Verify the message is the clean form, not double-wrapped
+    error_msg = str(excinfo.value)
+    assert error_msg.startswith("ECR push failed:")
+    assert "failed to push image to ECR: ECR push failed" not in error_msg
 
 
 def test_fargate_subnets_default_to_empty_list_when_not_provided_and_env_unset(monkeypatch):
