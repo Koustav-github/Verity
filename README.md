@@ -66,6 +66,20 @@ The proxy is also the first point at which Verity has ever seen production *inpu
 That is what makes drift detection possible, and why serving came before the drift metrics
 rather than after.
 
+**Container serving can now target AWS ECS Fargate, not just local Docker.**
+`VERITY_CONTAINER_RUNTIME=docker|fargate` selects the runtime in `deploy.py`, defaulting to
+`docker` so nothing about existing local dev changes unless explicitly opted in. Fargate
+exists specifically to get CloudWatch Logs for free — the task definition's `awslogs` driver
+wires this up with no application code — and a serving process that survives independently of
+wherever the local server happens to be running. Task lifecycle matches Docker's: a version's
+task runs until a new promotion under the same name replaces it; no autoscaling, no
+idle-shutdown, a deliberate scope decision, not a gap found afterward. Live-verified against a
+real AWS account: a real image built and pushed to ECR, a real Fargate task reaching `RUNNING`
+with a real public IP, answering `/predict` both through Verity's own proxy and by hitting that
+IP directly. See `docs/architecture.md` §9.9 for the full account, including a real bug this
+work found and fixed — `docker-py`'s image push does not raise on failure by default, so an
+early version of the ECR push step silently produced no image while reporting success.
+
 **Falcon now detects and notifies, not just configures and exposes.** Two checks run inline,
 triggered by the events that already move data — no scheduler, no poller. `check_systemic`
 compares a version's last 15 minutes of live traffic against the 15 minutes before that
@@ -305,7 +319,7 @@ Each gets decided when the version that needs it is built.
 | Scoring engine | Turns raw outputs into scores server-side | V1 |
 | Registry service | Version identity, lineage, promotion gating | V1 |
 | Image builder | Renders a Dockerfile + pinned requirements from the manifest; builds one image per promoted version | V1 |
-| Container runtime | Starts, health-checks, and stops serving containers — local Docker at V1, a cloud runner later behind the same interface | V1 |
+| Container runtime | Starts, health-checks, and stops serving containers — local Docker or AWS Fargate behind the same interface, selected by `VERITY_CONTAINER_RUNTIME` | V1 |
 | Inference proxy | Public `/predict` surface; routes by model name to the live container and records every request as telemetry | V1 |
 | Ingestion endpoint | Receives production telemetry from deployed agents | V1 |
 | SDK / agent | Runs in the customer's environment; eval jobs + telemetry | V1 |

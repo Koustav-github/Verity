@@ -256,7 +256,7 @@ drafts of this file and pulled forward because V1 now serves. Every column below
 | `model_version_id` | text FK → `model_version` | |
 | `image_tag` | text | the built image; identifies the exact environment serving this version |
 | `container_id` | text | runtime handle; null while `building` or if the build failed |
-| `host_port` | integer | ephemeral, assigned by the runtime and read back — not from a registry |
+| `host_port` | integer | ephemeral, assigned by the runtime and read back — not from a registry. Nullable: meaningful for `DockerRuntime`'s local port, always null for `FargateRuntime`, which has no equivalent concept (`endpoint_url` alone identifies where the task is reachable) |
 | `endpoint_url` | text | where the proxy forwards to |
 | `status` | text | `building` · `live` · `failed` · `stopped` |
 | `error` | jsonb | why a `failed` deployment failed; null otherwise |

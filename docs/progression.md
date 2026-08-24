@@ -297,3 +297,55 @@ the record is being maintained after the reboot
     distributional distance metric that doesn't exist yet), autonomous retraining (a human
     decides, always), the `agent_run` audit trail, comparative promotion gating, and anything
     beyond a single local replica.
+
+11. Container serving can now run on AWS ECS Fargate instead of only local Docker — done
+    specifically to get CloudWatch Logs for free and a serving process that survives
+    independently of wherever the local server happens to be running. `serving/runtime.py`
+    was already built with a `ContainerRuntime` seam anticipating exactly this (`build` /
+    `run` / `stop`, `DockerRuntime` the only implementation); `FargateRuntime` is the second
+    one, selected via `VERITY_CONTAINER_RUNTIME=docker|fargate` (`deploy.py`), defaulting to
+    `docker` so nothing about existing local dev changes unless explicitly opted in.
+    - The seam had a real gap once a second implementation actually needed it:
+      `deploy.py` hardcoded `f"http://localhost:{host_port}"` rather than trusting the
+      runtime to say where it's reachable — invisible while Docker was the only
+      implementation, since `localhost` was always correct by construction. `run()` now
+      returns `endpoint_url` directly; `host_port` is optional in the dict and nullable in
+      the `deployment` row, meaningful for Docker's ephemeral port, absent for Fargate.
+    - `build()` delegates the local `docker build` to an internal `DockerRuntime`, then
+      pushes to ECR. `run()` registers a new revision of one task definition family, launches
+      with `assignPublicIp=ENABLED` (the server calling this runs locally, not inside the
+      VPC), polls until the task reaches `RUNNING`, then resolves its ENI to a public IP.
+      `stop()` is a direct `ecs.stop_task`. Task lifecycle matches Docker's exactly: a
+      version's task runs until a new promotion under the same name replaces it — no
+      autoscaling, no idle-shutdown, the same "single replica" risk api-fication already
+      accepted, not a new one.
+    - **A real bug found live, not by review:** `docker-py`'s `images.push()` does not raise
+      on a failed push by default — it returns the streamed log as an opaque object, and any
+      `error` entry in it is silently ignored unless the caller checks. An early version of
+      `_push_to_ecr` didn't check, so a real push against the real ECR repo silently produced
+      zero images while `build()` reported success — only surfaced because the live Fargate
+      test then failed downstream with a confusing `CannotPullContainerError`. Fixed by
+      requesting the decoded stream (`stream=True, decode=True`) and raising
+      `ContainerRuntimeError` on any `error` entry, with a test that proves the raise actually
+      fires (and that the message isn't a redundant double-wrap of itself — a second real bug
+      the fix's own review caught before it shipped).
+    - **Live-verified twice, at two different layers.** First, the isolated runtime test
+      (`test_a_real_model_deploys_to_fargate_and_answers_health`, gated behind
+      `@pytest.mark.aws` and `VERITY_RUN_FARGATE_LIVE_TEST=1` — never inferred from the
+      presence of AWS credentials, matching the existing `@pytest.mark.docker` precedent but
+      opt-in instead of auto-detected): a real image built, pushed, launched as a real Fargate
+      task, reached `RUNNING`, answered `/health`, stopped. Second, the full app stack end to
+      end: `VERITY_CONTAINER_RUNTIME=fargate`, a real `verity --demo` promotion, a real
+      deployment row with `endpoint_url` a genuine public IP (not `localhost`) and
+      `host_port` null, `/predict` answered correctly both through Verity's own proxy route
+      and by hitting that public IP directly from outside the VPC. The task was stopped and
+      confirmed gone afterward.
+    - Two transient failures along the way, neither a code defect: IAM policy propagation
+      delay right after permissions were granted (resolved itself within minutes, confirmed
+      by a standalone reproduction outside pytest), and one demo run that legitimately failed
+      its own eval gate on an LLM-proposed `resource.cpu_time_s` threshold too tight for a
+      trivial demo model — ordinary Nat threshold-proposal noise, not related to Fargate.
+    - **Accepted risks, named in the design spec, not solved here:** no autoscaling or
+      idle-shutdown (a continuously-billed task for as long as it's the live version); a
+      real cold-start on every replacement, on top of whatever the image build/push took; a
+      fresh public IP per task with no load balancer or stable DNS name in front of it.

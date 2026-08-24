@@ -707,10 +707,19 @@ well-meaning reorder would silently cost minutes per deploy and break nothing vi
 
 ### 9.5 The runtime seam
 
-`serving/runtime.py` exposes `build` / `run` / `stop`, and `DockerRuntime` is the only
-implementation. Ports are ephemeral — Docker assigns, the code reads back — so there is no
-port registry to drift out of sync with reality. Everything above the file talks to the
-interface, so an ECS or Fargate runtime is a new class plus one wiring change.
+`serving/runtime.py` exposes `build` / `run` / `stop`. Ports are ephemeral — Docker
+assigns, the code reads back — so there is no port registry to drift out of sync with
+reality. Everything above the file talks to the interface, which is why a second
+implementation (§9.9) cost one new class plus one wiring change, not a rewrite.
+
+`run()`'s return contract is `{"container_id", "endpoint_url", "host_port"}` —
+`endpoint_url` is built by whichever runtime returns it, not assumed by the caller.
+This wasn't always true: `deploy.py` originally hardcoded
+`f"http://localhost:{host_port}"`, an assumption invisible while `DockerRuntime` was the
+only implementation and never exercised until a second one needed a real public IP
+instead of `localhost`. `host_port` is now optional in the dict — meaningful for
+Docker's ephemeral local port, `None` for a runtime with no such concept — and
+`deployment.host_port` in the database is nullable for exactly that reason.
 
 ### 9.6 Ordering and teardown
 
@@ -754,6 +763,62 @@ Worth seeing side by side, from the live run: the proxy measures ~24 ms end-to-e
 the `eval_reference` sitting beside it in the same response reads 0.19 ms. Both are honest;
 they measure different things. The 128× gap is exactly why Falcon tags its numbers
 `"basis": "sandbox_feasibility"` and compares nothing.
+
+### 9.9 `FargateRuntime` — the second implementation, and why it exists
+
+Local Docker never leaves the machine `main.py` runs on — fine for development, but it
+means model-serving logs live only in a terminal nobody is watching, and the container
+disappears the moment that process does. `FargateRuntime`
+(`serving/runtime.py`) moves serving onto AWS ECS Fargate specifically to get CloudWatch
+Logs for free (the task definition's `awslogs` log driver wires this up automatically,
+no application code involved) and a process that survives independently of the local
+server. `VERITY_CONTAINER_RUNTIME=docker|fargate` selects between them in
+`deploy.py`'s `_default_runtime()`, defaulting to `docker` — nothing about existing
+local dev changes unless explicitly opted in.
+
+`build()` delegates the actual `docker build` to an internal `DockerRuntime` instance
+(no duplicated Dockerfile-handling logic), then pushes the image to ECR: fetch a
+temporary token via `ecr.get_authorization_token()`, `docker login`, re-tag, push. The
+push step is the one place this implementation needed real defensive care — `docker-py`'s
+`images.push()` does not raise on a failed push by default, returning the streamed log as
+an opaque object instead. `_push_to_ecr` requests the decoded stream
+(`stream=True, decode=True`) and raises `ContainerRuntimeError` on any `error` entry in
+it; this was found live, not in review — an early version treated "didn't raise" as
+"succeeded," and a real push against a real ECR repo silently produced zero images while
+`build()` reported success. Confirmed by the live-verification run and fixed before this
+reached `main`.
+
+`run()` registers a new revision of one task definition family (`verity-model`, not one
+family per version — ECS's own revisioning is the versioning primitive), launches it with
+`launchType="FARGATE"` and `assignPublicIp="ENABLED"` (the calling server runs locally,
+not inside the VPC, so a task needs a real public IP to be reachable at all), then polls
+`describe_tasks` until `lastStatus == "RUNNING"` before resolving the task's ENI to a
+public IP via `ec2.describe_network_interfaces()` — ECS's own response gives the ENI id,
+not the IP directly. This poll is deliberately separate from `deploy.py`'s existing
+`wait_healthy()`: one confirms the task *exists with a network address*, the other
+confirms the *app inside it* is actually serving. `stop()` is a direct `ecs.stop_task`.
+
+Task lifecycle matches what already existed for Docker: a version's task runs until a new
+promotion under the same name replaces it, at which point `deploy.py`'s existing teardown
+path stops it — no idle-timeout, no autoscaling, a deliberate scope decision matching
+api-fication's own original "single replica, no autoscaling" accepted risk, not a
+limitation discovered afterward.
+
+**Live-verified**, not just tested against fakes: a real image built, pushed to
+`504509954111.dkr.ecr.us-east-1.amazonaws.com/verity/verity-model`, launched as a real
+Fargate task in `verity-cluster`, reached `RUNNING`, answered `/health` and then
+`/predict` over a real public IP — both through the app's own proxy route
+(`POST /users/{user_id}/models/{name}/predict`) and by hitting the public IP directly,
+confirming `deployment.endpoint_url` is genuinely reachable from outside the VPC, not
+just internally resolvable. The task was stopped afterward; nothing was left running.
+
+The one test that touches real AWS (`test_a_real_model_deploys_to_fargate_and_answers_health`,
+`tests/test_runtime_docker.py`) is marked `@pytest.mark.aws` and skipped by default —
+`tests/conftest.py` requires `VERITY_RUN_FARGATE_LIVE_TEST=1` set explicitly, never
+inferred from the presence of AWS credentials, matching the existing `@pytest.mark.docker`
+precedent but with an opt-in instead of an auto-detected daemon: a reachable AWS account is
+not a safe signal to run automatically, since it costs real money and takes real time (a
+Fargate task typically takes 30-90 seconds to reach `RUNNING`).
 
 ---
 
