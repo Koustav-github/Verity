@@ -7,7 +7,7 @@ DeployError as non-fatal — see its comment there for why.
 
 import tempfile
 
-HEALTH_TIMEOUT_SECONDS = 60
+HEALTH_TIMEOUT_SECONDS = 120
 
 
 class DeployError(Exception):
@@ -27,7 +27,6 @@ def deploy(
     wait_healthy_fn=None,
     tempdir_fn=None,
 ):
-    runtime = runtime or _default_runtime()
     render_fn = render_fn or _default_render
     wait_healthy_fn = wait_healthy_fn or _default_wait_healthy
     tempdir_fn = tempdir_fn or tempfile.TemporaryDirectory
@@ -39,6 +38,7 @@ def deploy(
 
     container_id = None
     try:
+        runtime = runtime or _default_runtime()
         with tempdir_fn() as context_dir:
             render_fn(
                 dest=context_dir,

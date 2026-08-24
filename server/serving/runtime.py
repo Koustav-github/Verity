@@ -1,8 +1,9 @@
 """Where a model container actually runs.
 
-Everything above this file talks to the three-method interface, never to Docker. An ECS
-or Fargate runtime later is a new class here plus one wiring change in deploy.py — which
-is the entire reason this seam exists at V1, when there is only one implementation.
+Everything above this file talks to the three-method interface, never to Docker or AWS
+directly. `DockerRuntime` and `FargateRuntime` are the two implementations today — the
+seam paid for itself exactly as intended: `FargateRuntime` cost one new class here plus
+one wiring change in deploy.py, not a rewrite.
 """
 
 import time
@@ -60,6 +61,8 @@ class DockerRuntime:
     def stop(self, *, container_id):
         try:
             self.client.containers.get(container_id).stop(timeout=10)
+        except ContainerRuntimeError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ContainerRuntimeError(f"container failed to stop: {exc}") from exc
 
@@ -217,6 +220,11 @@ class FargateRuntime:
                     }
                 },
             )
+            failures = launched.get("failures") or []
+            if failures:
+                raise ContainerRuntimeError(
+                    f"Fargate run_task failed: {failures[0].get('reason', 'unknown reason')}"
+                )
             task_arn = launched["tasks"][0]["taskArn"]
 
             public_ip = self._wait_for_public_ip(
@@ -237,16 +245,29 @@ class FargateRuntime:
         while True:
             described = self.ecs.describe_tasks(cluster=self.cluster, tasks=[task_arn])
             task = described["tasks"][0]
-            if task["lastStatus"] == "RUNNING":
+            status = task["lastStatus"]
+            if status == "RUNNING":
                 eni_id = self._eni_id_from(task)
                 interfaces = self.ec2.describe_network_interfaces(
                     NetworkInterfaceIds=[eni_id]
                 )
                 return interfaces["NetworkInterfaces"][0]["Association"]["PublicIp"]
+            if status in ("STOPPED", "STOPPING", "DEACTIVATING"):
+                stopped_reason = task.get("stoppedReason", "unknown reason")
+                containers = task.get("containers") or []
+                container_reason = containers[0].get("reason") if containers else None
+                detail = (
+                    f"{stopped_reason} ({container_reason})"
+                    if container_reason
+                    else stopped_reason
+                )
+                raise ContainerRuntimeError(
+                    f"Fargate task {task_arn} stopped before reaching RUNNING: {detail}"
+                )
             if time.monotonic() >= deadline:
                 raise ContainerRuntimeError(
                     f"Fargate task {task_arn} did not reach RUNNING within {timeout}s "
-                    f"(last status: {task['lastStatus']})"
+                    f"(last status: {status})"
                 )
             time.sleep(interval)
 
@@ -263,6 +284,8 @@ class FargateRuntime:
     def stop(self, *, container_id):
         try:
             self.ecs.stop_task(cluster=self.cluster, task=container_id)
+        except ContainerRuntimeError:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise ContainerRuntimeError(f"Fargate task failed to stop: {exc}") from exc
 

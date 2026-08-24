@@ -804,6 +804,38 @@ path stops it — no idle-timeout, no autoscaling, a deliberate scope decision m
 api-fication's own original "single replica, no autoscaling" accepted risk, not a
 limitation discovered afterward.
 
+`VERITY_CONTAINER_RUNTIME=docker|fargate` selects the runtime that resolves to; also
+required, when `fargate` is selected, are `VERITY_FARGATE_ECR_URI`,
+`VERITY_FARGATE_EXECUTION_ROLE_ARN`, and `VERITY_FARGATE_SECURITY_GROUP` (no default —
+`FargateRuntime.__init__` reads them directly from `os.environ[...]`), plus
+`VERITY_FARGATE_SUBNETS` (comma-separated; defaults to an empty list if unset, which then
+fails later at `run_task` rather than at construction). `VERITY_FARGATE_REGION`,
+`VERITY_FARGATE_CLUSTER`, and `VERITY_FARGATE_LOG_GROUP` are optional, defaulting to
+`us-east-1`, `verity-cluster`, and `/ecs/verity-model`. See the README's Fargate paragraph
+for the same list in one place.
+
+**One more accepted risk, found by the final review rather than named in the original
+spec:** `_tear_down` stops the previous deployment's container using whichever runtime
+`VERITY_CONTAINER_RUNTIME` currently resolves to, not whichever runtime actually created
+it. Flipping the env var between two promotions of the same model would hand the wrong
+runtime a container id it doesn't recognize; the failure is swallowed by the same
+best-effort teardown contract that already tolerates an already-dead container, so the
+old resource is silently orphaned rather than the promotion failing. Not solved here — the
+real fix is recording which runtime created each `deployment` row and tearing down with
+that one specifically. In practice this only bites if the env var changes between two
+promotions of the *same* model, which nothing in normal operation does.
+
+Two more costs named here rather than in the original spec: every promotion pushes a new
+image layer set to ECR and registers a new task-definition revision, and neither is ever
+cleaned up — ECR storage bills per GB-month and grows monotonically with every deploy,
+larger in practice than the CloudWatch log retention cost the spec already named. And
+`assignPublicIp=ENABLED` behind a security group open to `0.0.0.0/0:8000` means a
+Fargate-served model's `/predict` is reachable from the open internet with no
+authentication — `DockerRuntime` never had this exposure, since it only ever bound to
+`localhost`. This is the same standing "no auth until V1.5" decision already accepted for
+every other route (`/ingest`, `/telemetry`, `/predict` itself), just newly reachable from
+outside the local machine instead of only from it.
+
 **Live-verified**, not just tested against fakes: a real image built, pushed to
 `504509954111.dkr.ecr.us-east-1.amazonaws.com/verity/verity-model`, launched as a real
 Fargate task in `verity-cluster`, reached `RUNNING`, answered `/health` and then

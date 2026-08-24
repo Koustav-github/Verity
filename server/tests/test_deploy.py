@@ -185,3 +185,27 @@ def test_teardown_is_skipped_when_the_archived_version_had_no_live_deployment():
     _deploy(store, runtime, archived="mv_0")
 
     assert runtime.stopped == []
+
+
+def test_deploy_records_a_failed_row_when_the_default_runtime_cannot_be_constructed(monkeypatch):
+    monkeypatch.setenv("VERITY_CONTAINER_RUNTIME", "fargate")
+    monkeypatch.delenv("VERITY_FARGATE_ECR_URI", raising=False)
+    monkeypatch.delenv("VERITY_FARGATE_EXECUTION_ROLE_ARN", raising=False)
+    monkeypatch.delenv("VERITY_FARGATE_SECURITY_GROUP", raising=False)
+    store = FakeStore()
+
+    with pytest.raises(DeployError):
+        deploy(
+            model_version_id="mv_1",
+            payload=b"payload",
+            io_schema=IO_SCHEMA,
+            environment=ENVIRONMENT,
+            metadata_store=store,
+            render_fn=lambda **kwargs: None,
+            wait_healthy_fn=lambda **kwargs: True,
+            tempdir_fn=_fake_tempdir,
+        )
+
+    assert store.saved[0]["status"] == "building"
+    assert store.updates[-1]["status"] == "failed"
+    assert "VERITY_FARGATE_ECR_URI" in store.updates[-1]["error"]["message"]

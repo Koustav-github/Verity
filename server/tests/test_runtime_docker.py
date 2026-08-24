@@ -1,3 +1,5 @@
+import time
+
 import cloudpickle
 import numpy as np
 import pytest
@@ -425,6 +427,41 @@ def test_fargate_run_gives_up_if_the_task_never_reaches_running():
 
     with pytest.raises(ContainerRuntimeError):
         runtime.run(tag="verity-model:mv_1", poll_timeout=0.2, poll_interval=0.05)
+
+
+def test_fargate_run_raises_with_the_reason_when_run_task_reports_a_failure():
+    ecs = FakeEcsClientForRun()
+    ecs.run_task = lambda **kwargs: {
+        "tasks": [],
+        "failures": [{"reason": "RESOURCE:SUBNET", "arn": None}],
+    }
+    runtime = _fargate_runtime_for_run(ecs_client=ecs)
+
+    with pytest.raises(ContainerRuntimeError, match="RESOURCE:SUBNET"):
+        runtime.run(tag="verity-model:mv_1")
+
+
+def test_fargate_run_raises_immediately_with_the_reason_when_the_task_stops():
+    class FailingEcsClient(FakeEcsClientForRun):
+        def describe_tasks(self, *, cluster, tasks):
+            return {
+                "tasks": [
+                    {
+                        "taskArn": tasks[0],
+                        "lastStatus": "STOPPED",
+                        "stoppedReason": "CannotPullContainerError: image not found",
+                        "containers": [{"reason": "CannotPullContainerError"}],
+                        "attachments": [],
+                    }
+                ]
+            }
+
+    runtime = _fargate_runtime_for_run(ecs_client=FailingEcsClient())
+
+    start = time.monotonic()
+    with pytest.raises(ContainerRuntimeError, match="CannotPullContainerError"):
+        runtime.run(tag="verity-model:mv_1")
+    assert time.monotonic() - start < 5
 
 
 class FakeEcsClientForStop:

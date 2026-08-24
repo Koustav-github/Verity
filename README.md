@@ -80,6 +80,13 @@ IP directly. See `docs/architecture.md` §9.9 for the full account, including a 
 work found and fixed — `docker-py`'s image push does not raise on failure by default, so an
 early version of the ECR push step silently produced no image while reporting success.
 
+Selecting `fargate` also requires four more env vars — `VERITY_FARGATE_ECR_URI`,
+`VERITY_FARGATE_EXECUTION_ROLE_ARN`, `VERITY_FARGATE_SECURITY_GROUP` (all required, no
+default), and `VERITY_FARGATE_SUBNETS` (comma-separated; defaults to none, which then
+fails at task-launch time rather than at startup). `VERITY_FARGATE_REGION`,
+`VERITY_FARGATE_CLUSTER`, and `VERITY_FARGATE_LOG_GROUP` are optional and default to
+`us-east-1`, `verity-cluster`, and `/ecs/verity-model`.
+
 **Falcon now detects and notifies, not just configures and exposes.** Two checks run inline,
 triggered by the events that already move data — no scheduler, no poller. `check_systemic`
 compares a version's last 15 minutes of live traffic against the 15 minutes before that
