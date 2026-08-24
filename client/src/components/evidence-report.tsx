@@ -1,8 +1,19 @@
 import type { IngestResult } from "@/lib/verity";
 import { VerdictStamp } from "./verdict-stamp";
 import { TelemetryPanel } from "./telemetry-panel";
+import { TracesPanel } from "./traces-panel";
 import { DeploymentCard } from "./deployment-card";
 import { AlertsPanel } from "./alerts-panel";
+
+const RESOURCE_PREFIX = "resource.";
+
+function formatResourceValue(metric: string, value: number) {
+  if (metric.endsWith("_ms")) return `${value.toFixed(2)} ms`;
+  if (metric.endsWith("_mb")) return `${value.toFixed(1)} MB`;
+  if (metric.endsWith("_s")) return `${value.toFixed(3)} s`;
+  if (metric.endsWith("_rps")) return `${value.toFixed(1)} rps`;
+  return value.toFixed(4);
+}
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
@@ -43,6 +54,18 @@ function ThresholdRow({
 export function EvidenceReport({ result }: { result: IngestResult }) {
   const verdict = result.eval_run?.verdict ?? result.status;
   const failedMetrics = new Set((result.eval_run?.failed_on ?? []).map((f) => f.metric));
+
+  const qualityThresholds =
+    result.eval_run?.thresholds.filter((t) => !t.metric.startsWith(RESOURCE_PREFIX)) ?? [];
+  const resourceThresholds =
+    result.eval_run?.thresholds.filter((t) => t.metric.startsWith(RESOURCE_PREFIX)) ?? [];
+  const resourceThresholdMetrics = new Set(resourceThresholds.map((t) => t.metric));
+  // Some resource.* scores (e.g. gpu_memory_mb when no GPU ran) have no threshold at
+  // all — still worth showing, just as plain values rather than a pass/fail row.
+  const unthresholdedResourceScores = Object.entries(result.eval_run?.scores ?? {}).filter(
+    ([metric, value]) =>
+      metric.startsWith(RESOURCE_PREFIX) && value != null && !resourceThresholdMetrics.has(metric),
+  );
 
   return (
     <section className="font-mono text-sm">
@@ -87,7 +110,7 @@ export function EvidenceReport({ result }: { result: IngestResult }) {
             </p>
           )}
 
-          {result.eval_run.thresholds.map((t) => (
+          {qualityThresholds.map((t) => (
             <ThresholdRow
               key={t.metric}
               metric={t.metric}
@@ -106,6 +129,29 @@ export function EvidenceReport({ result }: { result: IngestResult }) {
         </div>
       )}
 
+      {(resourceThresholds.length > 0 || unthresholdedResourceScores.length > 0) && (
+        <div className="mt-6 border-t border-rule pt-4">
+          <h3 className="mb-2 text-xs uppercase tracking-[0.2em] text-brass">
+            System metrics — sandbox feasibility, not production load
+          </h3>
+
+          {resourceThresholds.map((t) => (
+            <ThresholdRow
+              key={t.metric}
+              metric={t.metric}
+              op={t.op}
+              value={t.value}
+              actual={result.eval_run!.scores[t.metric]}
+              ok={!failedMetrics.has(t.metric)}
+            />
+          ))}
+
+          {unthresholdedResourceScores.map(([metric, value]) => (
+            <Row key={metric} label={metric} value={formatResourceValue(metric, value as number)} />
+          ))}
+        </div>
+      )}
+
       <div className="mt-6 border-t border-rule pt-4 text-xs text-ink-soft">
         <Row label="model_id" value={result.model_id ?? "—"} />
         <Row label="model_version_id" value={result.model_version_id} />
@@ -117,6 +163,7 @@ export function EvidenceReport({ result }: { result: IngestResult }) {
       {result.monitoring_config && (
         <>
           <TelemetryPanel modelVersionId={result.model_version_id} />
+          <TracesPanel modelVersionId={result.model_version_id} />
           <AlertsPanel modelVersionId={result.model_version_id} />
         </>
       )}

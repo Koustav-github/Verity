@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from main import app, get_build_artifact, get_metadata_store
+from main import TELEMETRY_TRACE_LIMIT, app, get_build_artifact, get_metadata_store
 
 
 def test_ingest_allows_cross_origin_requests_from_the_local_frontend():
@@ -261,6 +261,90 @@ def test_reading_telemetry_summarises_the_window_alongside_the_eval_reference():
     assert body["error_rate"] == 0.5
     assert body["eval_reference"]["basis"] == "sandbox_feasibility"
     assert captured["model_version_id"] == "mv_1"
+
+
+def test_reading_telemetry_includes_recent_events_newest_first():
+    class FakeStore:
+        def find_telemetry_events(self, *, model_version_id, since, limit):
+            # find_telemetry_events already orders newest-first (Supabase query,
+            # .order("occurred_at", desc=True)) — the fake mirrors that ordering
+            # rather than re-sorting, since the route must not assume otherwise.
+            return [
+                {
+                    "occurred_at": "2026-08-25T10:02:00+00:00",
+                    "latency_ms": 12.5,
+                    "status": "ok",
+                    "error_type": None,
+                    "prediction_id": "pred_2",
+                },
+                {
+                    "occurred_at": "2026-08-25T10:01:00+00:00",
+                    "latency_ms": 40.0,
+                    "status": "error",
+                    "error_type": "ValueError",
+                    "prediction_id": "pred_1",
+                },
+            ]
+
+        def find_monitoring_config(self, *, model_version_id):
+            return None
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/models/mv_1/telemetry")
+
+    app.dependency_overrides.clear()
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["recent_events"] == [
+        {
+            "occurred_at": "2026-08-25T10:02:00+00:00",
+            "latency_ms": 12.5,
+            "status": "ok",
+            "error_type": None,
+            "prediction_id": "pred_2",
+        },
+        {
+            "occurred_at": "2026-08-25T10:01:00+00:00",
+            "latency_ms": 40.0,
+            "status": "error",
+            "error_type": "ValueError",
+            "prediction_id": "pred_1",
+        },
+    ]
+
+
+def test_reading_telemetry_caps_recent_events_at_the_trace_display_limit():
+    events = [
+        {
+            "occurred_at": f"2026-08-25T10:{i:02d}:00+00:00",
+            "latency_ms": 1.0,
+            "status": "ok",
+            "error_type": None,
+            "prediction_id": f"pred_{i}",
+        }
+        for i in range(80)
+    ]
+
+    class FakeStore:
+        def find_telemetry_events(self, *, model_version_id, since, limit):
+            return events
+
+        def find_monitoring_config(self, *, model_version_id):
+            return None
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/models/mv_1/telemetry")
+
+    app.dependency_overrides.clear()
+
+    body = response.json()
+    assert len(body["recent_events"]) == TELEMETRY_TRACE_LIMIT
+    assert body["recent_events"][0]["prediction_id"] == "pred_0"
 
 
 def test_reading_telemetry_defaults_to_a_24_hour_window_and_accepts_an_override():

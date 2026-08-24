@@ -40,6 +40,11 @@ app.add_middleware(
 # the read path caps what it pulls. `truncated` in the response says when this bit.
 TELEMETRY_READ_LIMIT = 10_000
 
+# Separate, much smaller cap: TELEMETRY_READ_LIMIT bounds what's pulled from the database
+# for aggregation, but sending that many raw rows to a browser is a different question.
+# `find_telemetry_events` already returns newest-first, so this is a plain slice.
+TELEMETRY_TRACE_LIMIT = 50
+
 @lru_cache
 def get_build_artifact():
     blob_store = S3BlobStore(
@@ -172,7 +177,22 @@ async def read_telemetry(
         eval_reference=(config or {}).get("eval_reference"),
         limit=TELEMETRY_READ_LIMIT,
     )
-    return {"model_version_id": model_version_id, "hours": hours, **summary}
+    recent_events = [
+        {
+            "occurred_at": event.get("occurred_at"),
+            "latency_ms": event.get("latency_ms"),
+            "status": event.get("status"),
+            "error_type": event.get("error_type"),
+            "prediction_id": event.get("prediction_id"),
+        }
+        for event in events[:TELEMETRY_TRACE_LIMIT]
+    ]
+    return {
+        "model_version_id": model_version_id,
+        "hours": hours,
+        **summary,
+        "recent_events": recent_events,
+    }
 
 
 @app.get("/models/{model_version_id}/alerts")

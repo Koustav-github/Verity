@@ -120,6 +120,14 @@ export async function ingest(options: {
   return response.json();
 }
 
+export type TelemetryTrace = {
+  occurred_at: string;
+  latency_ms: number | null;
+  status: "ok" | "error" | "timeout";
+  error_type: string | null;
+  prediction_id: string | null;
+};
+
 export type TelemetrySummary = {
   model_version_id: string;
   hours: number;
@@ -130,6 +138,7 @@ export type TelemetrySummary = {
   latency_p99_ms: number | null;
   truncated: boolean;
   eval_reference: Record<string, unknown> | null;
+  recent_events: TelemetryTrace[];
 };
 
 export async function fetchTelemetry(
