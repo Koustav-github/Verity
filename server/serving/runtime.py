@@ -158,7 +158,17 @@ class FargateRuntime:
             version_tag = tag.split(":", 1)[1]
             image = client.images.get(tag)
             image.tag(repository=self.ecr_repository_uri, tag=version_tag)
-            client.images.push(repository=self.ecr_repository_uri, tag=version_tag)
+            push_log = client.images.push(
+                repository=self.ecr_repository_uri,
+                tag=version_tag,
+                stream=True,
+                decode=True,
+            )
+            for entry in push_log:
+                if "error" in entry:
+                    raise ContainerRuntimeError(
+                        f"ECR push failed: {entry.get('error') or entry.get('errorDetail')}"
+                    )
         except Exception as exc:  # noqa: BLE001
             raise ContainerRuntimeError(f"failed to push image to ECR: {exc}") from exc
 

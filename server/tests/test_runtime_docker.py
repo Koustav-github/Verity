@@ -181,11 +181,12 @@ class FakeDockerRuntimeForFargate:
 
 
 class FakeDockerClientForPush:
-    def __init__(self):
+    def __init__(self, push_log=None):
         self.login_calls = []
         self.tag_calls = []
         self.push_calls = []
         self.images = self
+        self._push_log = push_log if push_log is not None else [{"status": "Pushed"}]
 
     def login(self, **kwargs):
         self.login_calls.append(kwargs)
@@ -193,8 +194,11 @@ class FakeDockerClientForPush:
     def get(self, tag):
         return FakeImageForPush(self)
 
-    def push(self, repository, tag=None):
-        self.push_calls.append({"repository": repository, "tag": tag})
+    def push(self, repository, tag=None, stream=False, decode=False):
+        self.push_calls.append(
+            {"repository": repository, "tag": tag, "stream": stream, "decode": decode}
+        )
+        return iter(self._push_log)
 
 
 class FakeImageForPush:
@@ -267,7 +271,23 @@ def test_fargate_build_tags_and_pushes_the_image_under_the_ecr_uri():
     runtime.build(context_dir="/tmp/ctx", tag="verity-model:mv_1")
 
     assert docker_runtime.client.tag_calls == [{"repository": ECR_REPO, "tag": "mv_1"}]
-    assert docker_runtime.client.push_calls == [{"repository": ECR_REPO, "tag": "mv_1"}]
+    assert docker_runtime.client.push_calls == [
+        {"repository": ECR_REPO, "tag": "mv_1", "stream": True, "decode": True}
+    ]
+
+
+def test_fargate_build_raises_when_the_ecr_push_log_reports_an_error():
+    docker_runtime = FakeDockerRuntimeForFargate()
+    docker_runtime.client = FakeDockerClientForPush(
+        push_log=[
+            {"status": "Pushing"},
+            {"errorDetail": {"message": "denied: requested access to the resource is denied"}, "error": "denied: requested access to the resource is denied"},
+        ]
+    )
+    runtime = _fargate_runtime(docker_runtime=docker_runtime)
+
+    with pytest.raises(ContainerRuntimeError, match="ECR push failed"):
+        runtime.build(context_dir="/tmp/ctx", tag="verity-model:mv_1")
 
 
 def test_fargate_subnets_default_to_empty_list_when_not_provided_and_env_unset(monkeypatch):
