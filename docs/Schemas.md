@@ -47,14 +47,14 @@ The logical model, stable across versions.
 | `model_class` | text | `ML` · `DL` · `RL` · `LLM_APP` · `RAG` · `AGENTIC` |
 | `task_type` | text | Atlas lookup key, e.g. `binary_classification` |
 | `created_at` | timestamptz | |
-| `alert_email` | text | nullable; who Falcon emails on a detected anomaly. Set at `assemble()` time (`verity.assemble(..., alert_email=...)`); `agents/brain3/fury/registry.py`'s existing-model branch never touches it, so re-uploading a new version of an already-registered model cannot silently change who gets notified |
+| `alert_email` | text | nullable; who Falcon emails on a detected anomaly. Set at `assemble()` time (`verity.assemble(..., alert_email=...)`); `server/agents/brain3/fury/registry.py`'s existing-model branch never touches it, so re-uploading a new version of an already-registered model cannot silently change who gets notified |
 
 Every column here is built (`c8e51f4d9a06`; `alert_email` added by `4d3c31bd85bd`).
 
 `model_class` is aspirational as written above: the shipped registry
-(`agents/brain3/fury/registry.py`) copies this value straight from Hawkeye's manifest,
+(`server/agents/brain3/fury/registry.py`) copies this value straight from Hawkeye's manifest,
 which is a framework class name like `LogisticRegression` (see
-`agents/brain1/hawkeye/identify.py`), not one of the `ML` · `DL` · `RL` · `LLM_APP` ·
+`server/agents/brain1/hawkeye/identify.py`), not one of the `ML` · `DL` · `RL` · `LLM_APP` ·
 `RAG` · `AGENTIC` taxonomy values. Reconciling the stored value with the declared
 taxonomy is open.
 
@@ -240,7 +240,7 @@ single-client, cold sandbox — production latency under real concurrency will b
 higher. The `basis` marker exists so a reader can tell what kind of number it is looking at.
 
 This was originally "nothing in V1 compares against it" — no longer true. Falcon's
-agentic-observability feature (`agents/brain4/falcon/detect.py`, `monitor.py`) compares two
+agentic-observability feature (`server/agents/brain4/falcon/detect.py`, `monitor.py`) compares two
 adjacent live-traffic windows against each other, never against `eval_reference` directly (see
 `architecture.md` §8.7) — the honesty constraint against a cold-sandbox baseline still holds,
 it's just satisfied by comparing recent traffic to its own immediately preceding traffic instead

@@ -134,8 +134,8 @@ template api-fication generates from, kept as the reference for what "correct" l
 
 | Path | Contents |
 |---|---|
-| `agents/` | the four brains — `brain1/hawkeye`, `brain2/nat`, `brain3/fury`, `brain4/falcon` |
-| `server/` | FastAPI app, orchestrator, storage adapters, sandbox, Alembic migrations |
+| `server/agents/` | the four brains — `brain1/hawkeye`, `brain2/nat`, `brain3/fury`, `brain4/falcon` |
+| `server/` | FastAPI app, orchestrator, storage adapters, sandbox, Alembic migrations — `agents/` lives inside it now, since nothing outside `server/` ever imports the agents |
 | `verity/` | the client SDK (`assemble`, `monitor`, CLI) |
 | `client/` | Next.js intake form for exercising the loop by hand |
 | `demo/serve/` | the hand-written reference service |

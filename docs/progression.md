@@ -8,7 +8,7 @@ the record is being maintained after the reboot
    Ships with the SDK, so `assemble(model, X_test=..., y_test=...)` is the whole loop.
    - The eval mechanism is chosen from the fixture's `kind`, not hardcoded. Only
      `labeled_holdout` is registered; images/RAG/rollout are a module + a registry line
-     later, not a rewrite (agents/brain2/nat/registry.py).
+     later, not a rewrite (server/agents/brain2/nat/registry.py).
    - `predict()` runs in a subprocess with every credential withheld
      (server/execution/sandbox.py). There is a test that proves the child cannot read
      SUPABASE_KEY.
@@ -107,7 +107,7 @@ the record is being maintained after the reboot
    underneath them.
    - **Groq retired the entire Llama line.** `llama-3.3-70b-versatile` started returning 404
      `model_not_found`, which broke both LLM agents at once. `GET /openai/v1/models` on the live
-     key showed what was actually reachable; `agents/provider.py` now defaults to
+     key showed what was actually reachable; `server/agents/provider.py` now defaults to
      `openai/gpt-oss-120b`. Two tests had pinned the old model as a bare string literal and
      failed for the wrong reason — they now assert against `DEFAULT_MODEL` imported from
      `agents.provider`, so they pin *"the provider default is used"* rather than which model
@@ -204,7 +204,7 @@ the record is being maintained after the reboot
     against itself rather than against a cold-sandbox figure stopped requiring anything V3's
     analytics store was supposed to unlock first.
     - **Two checks, zero LLM calls, reusing machinery that already existed rather than
-      reimplementing it.** `agents/brain4/falcon/detect.py`'s `detect_systemic_anomaly` compares
+      reimplementing it.** `server/agents/brain4/falcon/detect.py`'s `detect_systemic_anomaly` compares
       a version's trailing 15 minutes of traffic (`error_rate`, then `latency_p95_ms`) against
       the 15 minutes before that — never against `eval_reference`, which is a cold-sandbox
       estimate that always looks better than real traffic and would just manufacture false
@@ -236,7 +236,7 @@ the record is being maintained after the reboot
       `emailed_at` staying null is the only record delivery didn't happen; nothing retries it.
     - `alert_email` threads all the way from `verity.assemble(model, ..., alert_email=...)`
       through `upload()` → `/ingest` → `orchestrator.build_artifact()` →
-      `agents/brain3/fury/registry.py`'s `register()` → `create_model()`. Deliberately one-way:
+      `server/agents/brain3/fury/registry.py`'s `register()` → `create_model()`. Deliberately one-way:
       the existing-model branch of `register()` never touches a model's `alert_email` on a later
       version's upload, so re-uploading an already-registered model can't silently change who
       gets notified.

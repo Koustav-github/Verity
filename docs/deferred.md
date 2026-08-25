@@ -9,7 +9,7 @@ actually fixed.
 
 ## 1. `score()` lets one unmeasurable metric kill the whole computation
 
-**Where:** `agents/brain2/nat/score.py` — the `score()` function's per-metric loop.
+**Where:** `server/agents/brain2/nat/score.py` — the `score()` function's per-metric loop.
 
 **What's wrong:** `score()` iterates `metric_set` and computes each one with
 `scores[metric] = float(fn(outputs))`, with no per-metric error handling. If any single
@@ -31,7 +31,7 @@ degenerate label distributions, which is its own small piece of work.
 **Why this is newly reachable, not just a pre-existing footgun:** `score()` was written
 for Nat's original eval path, where the fixture is something the *developer* constructed
 (a labeled holdout they built) — a single-class holdout is an unusual mistake to make.
-Falcon's quality check (`agents/brain4/falcon/monitor.py::check_quality`) calls the same
+Falcon's quality check (`server/agents/brain4/falcon/monitor.py::check_quality`) calls the same
 `score()` against **customer-reported delayed labels** accumulated over real production
 traffic — far less controlled, and a run of same-answer labels (a quiet period, a
 one-sided bug report, or literally the pathological case a bad-actor might construct
@@ -42,7 +42,7 @@ hit this for real.
 class, Falcon's quality check silently produces *no* alert for that round — not because
 nothing was wrong, but because the check itself failed at the `roc_auc` metric and never
 got to evaluate `accuracy`, `f1`, or anything else in the set. `detection_errors`
-(`agents/brain4/falcon/monitor.py`) does increment when this happens, so it's not
+(`server/agents/brain4/falcon/monitor.py`) does increment when this happens, so it's not
 *invisible* — but nobody is currently watching that counter, so in practice it's
 indistinguishable from "checked, found nothing wrong" to anyone not specifically looking.
 

@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -11,11 +10,6 @@ from dotenv import load_dotenv
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Callable, Literal
-
-# agents/ lives one directory up (repo root), alongside server/ and verity/ —
-# needed at runtime, not just under pytest (whose pythonpath config doesn't
-# apply to a real `uvicorn main:app` process).
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from orchestrator import build_artifact
 from storage.models.s3 import S3BlobStore

@@ -65,7 +65,7 @@ to where the ambiguity actually lives.
 
 ### 2.1 Fixture kind → eval mechanism
 
-`agents/brain2/nat/registry.py:13-15`
+`server/agents/brain2/nat/registry.py:13-15`
 
 ```python
 MECHANISMS = {
@@ -77,7 +77,7 @@ MECHANISMS = {
 `UnsupportedFixture` on anything not registered. This is **not** LLM-chosen — it cannot be
 hallucinated, because it's a dict lookup on a client-supplied string, resolved before any
 LLM call happens. Widening Verity to a new model class is a new module
-(`agents/brain2/nat/mechanisms/image_folder.py`, etc.) plus one line here — the comment at
+(`server/agents/brain2/nat/mechanisms/image_folder.py`, etc.) plus one line here — the comment at
 `registry.py:9-12` names exactly which future version needs which kind
 (`image_folder` → V3/DL, `corpus_index` → V4/RAG, `environment_ref` → V5/RL).
 
@@ -111,7 +111,7 @@ test collection.
 
 ### 2.3 Threshold ops as a dict, not a branch
 
-`agents/brain2/nat/score.py:73-78` — `>=`/`<=`/`>`/`<` map to lambdas, keyed by the exact
+`server/agents/brain2/nat/score.py:73-78` — `>=`/`<=`/`>`/`<` map to lambdas, keyed by the exact
 string an LLM (Nat) is asked to emit. `apply_thresholds` (`score.py:81-93`) never branches
 on operator identity; it looks one up and calls it. The same shape, `_METRIC_FNS`
 (`score.py:15-41`), maps 14 concrete metric names to `(fn, needs_proba)` pairs, keyed by
@@ -240,7 +240,7 @@ constructs the real ones.
 
 ## 5. Fury — identity, dedup, promotion, archival
 
-`agents/brain3/fury/registry.py` — 51 lines, **the only agent with no LLM call**, because
+`server/agents/brain3/fury/registry.py` — 51 lines, **the only agent with no LLM call**, because
 everything it does is deterministic bookkeeping: a hash lookup, a name lookup, a status
 write.
 
@@ -298,7 +298,7 @@ own promotion, since that's the only visibility the accepted risk in §5.3 gets.
 
 ## 6. Hawkeye — identification
 
-`agents/brain1/hawkeye/identify.py` — the entire agent is one LLM call.
+`server/agents/brain1/hawkeye/identify.py` — the entire agent is one LLM call.
 
 ```python
 def identify(model, client=None) -> dict:
@@ -321,7 +321,7 @@ evaluation data, not the model object — Nat's mechanism (`labeled_holdout.py:1
 that distinction later, from real label cardinality, rather than Hawkeye guessing from a repr.
 
 Credentials are shared, not per-agent: `VERITY_LLM_API_KEY` / `VERITY_LLM_BASE_URL` are the
-same env vars Nat's `resolve.py` reads (`agents/provider.py` holds the shared defaults,
+same env vars Nat's `resolve.py` reads (`server/agents/provider.py` holds the shared defaults,
 `DEFAULT_BASE_URL`/`DEFAULT_MODEL` — currently Groq). Only the model *id* is
 per-agent-overridable (`HAWKEYE_LLM_MODEL` vs `NAT_LLM_MODEL`), so one provider swap moves
 every agent at once.
@@ -330,7 +330,7 @@ every agent at once.
 
 ## 7. Nat — evaluation
 
-`agents/brain2/nat/evaluate.py` is the orchestrating entry point; it **never raises** —
+`server/agents/brain2/nat/evaluate.py` is the orchestrating entry point; it **never raises** —
 every failure mode (unsupported fixture, a crashed sandbox, an LLM that returns garbage)
 becomes `verdict: "error"` with detail in `error` (`evaluate.py:24-27,75-77`). The reasoning
 is explicit in the docstring: *"A gate that cannot be evaluated must still leave a row
@@ -411,7 +411,7 @@ not a network call — the child imports nothing from `server` or `agents` (modu
 
 ## 8. Falcon — observability
 
-`agents/brain4/falcon/monitor.py` — **the only agent with no LLM call in it.** Everything
+`server/agents/brain4/falcon/monitor.py` — **the only agent with no LLM call in it.** Everything
 Falcon does is derivable from rows that already exist, so reasoning about it would add
 nondeterminism and buy nothing.
 
@@ -425,7 +425,7 @@ already exists* rather than proposed. `configure()` is two dict comprehensions a
 ### 8.2 The prefix split
 
 `build_eval_reference()` re-sorts the flat `eval_run.scores` dict using the same
-`RESOURCE_PREFIX` Nat namespaced it with (`agents/brain2/nat/score.py`):
+`RESOURCE_PREFIX` Nat namespaced it with (`server/agents/brain2/nat/score.py`):
 
 ```python
 for key, value in (scores or {}).items():
@@ -497,7 +497,7 @@ reached, so a caller can distinguish "1000 events" from "at least 1000 events".
 
 ### 8.7 Detection — two independent checks, both reusing Nat's own machinery
 
-`agents/brain4/falcon/detect.py` is two pure functions and four constants, zero LLM calls,
+`server/agents/brain4/falcon/detect.py` is two pure functions and four constants, zero LLM calls,
 zero I/O — the same "arithmetic over evidence that already exists" character as the rest of
 Falcon:
 
@@ -530,7 +530,7 @@ proportion to what the existing suite already demonstrates.
 (`detect.py:55-74`) recomputes Nat's own `score()` against accumulated labels and re-runs
 `apply_thresholds()` — the exact machinery that gated the original promotion, not a second
 implementation of it. `thresholds` is filtered to non-`resource.*` entries first
-(`RESOURCE_PREFIX`, shared with `agents/brain2/nat/score.py`): a resource threshold has no
+(`RESOURCE_PREFIX`, shared with `server/agents/brain2/nat/score.py`): a resource threshold has no
 corresponding key in this quality-only scores dict, and Nat's own rule that a threshold on a
 skipped metric is a failure, not a silent pass, would otherwise manufacture a quality alert
 caused by a systemic threshold that was never given data to evaluate.
@@ -634,7 +634,7 @@ automated action.
 
 ### 8.11 Notification — the row is truth, email is best-effort
 
-`agents/brain4/falcon/notify.py` and `email.py` implement the second half of `notify_fn`:
+`server/agents/brain4/falcon/notify.py` and `email.py` implement the second half of `notify_fn`:
 `record_and_notify(*, model_version_id, kind, metric, detail, metadata_store, email_fn=None)`
 (`notify.py:9-31`) writes the `alert_event` row **first**, unconditionally — this row is the
 source of truth for whether an alert fired at all, before anything about email is even
@@ -1047,9 +1047,9 @@ verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
 
 | Seam | Add by | Touches |
 |---|---|---|
-| New eval mechanism (images, RAG, RL) | new module + one `MECHANISMS` line | `agents/brain2/nat/registry.py` only |
-| New metric | new key in `_METRIC_FNS[section]` | `agents/brain2/nat/score.py` only |
-| New Atlas section (DL/RL/GenAI) | new key in `_ATLAS`/`_SUPPORTED` | `agents/brain2/nat/resolve.py` only |
+| New eval mechanism (images, RAG, RL) | new module + one `MECHANISMS` line | `server/agents/brain2/nat/registry.py` only |
+| New metric | new key in `_METRIC_FNS[section]` | `server/agents/brain2/nat/score.py` only |
+| New Atlas section (DL/RL/GenAI) | new key in `_ATLAS`/`_SUPPORTED` | `server/agents/brain2/nat/resolve.py` only |
 | New blob backend (R2, MinIO) | set `S3_ENDPOINT_URL` | zero code |
 | New container runtime (ECS, Fargate) | new class with `build`/`run`/`stop` | `serving/runtime.py` + one line in `serving/deploy.py` |
 | New sandbox mode | new entry in `_MODES` | `execution/runner.py` only |
@@ -1070,11 +1070,11 @@ verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
 | `server/execution/` | `sandbox.py` (`execute` + `introspect`), `runner.py` (child, standalone, dispatches on `mode`) |
 | `server/migrations/` | Alembic revisions — `model`, `model_version`, `manifest`, `eval_run`, `telemetry_event`, `monitoring_config`, `label_event`, `alert_event` |
 | `server/tests/` | 255 tests, hand-written fakes, no `unittest.mock` |
-| `agents/provider.py` | shared LLM base URL / default model |
-| `agents/brain1/hawkeye/` | identification — one LLM call, one pydantic model |
-| `agents/brain2/nat/` | `evaluate.py` (orchestration), `resolve.py` (LLM), `score.py` (deterministic), `registry.py` + `mechanisms/` (dispatch) |
-| `agents/brain3/fury/` | `registry.py` — dedup, identity, promotion, archival |
-| `agents/brain4/falcon/` | `monitor.py` (`configure`, `check_systemic`, `check_quality` — the LLM-free agent), `detect.py` (the two pure anomaly checks), `notify.py` + `email.py` (alert row + best-effort SES) |
+| `server/agents/provider.py` | shared LLM base URL / default model |
+| `server/agents/brain1/hawkeye/` | identification — one LLM call, one pydantic model |
+| `server/agents/brain2/nat/` | `evaluate.py` (orchestration), `resolve.py` (LLM), `score.py` (deterministic), `registry.py` + `mechanisms/` (dispatch) |
+| `server/agents/brain3/fury/` | `registry.py` — dedup, identity, promotion, archival |
+| `server/agents/brain4/falcon/` | `monitor.py` (`configure`, `check_systemic`, `check_quality` — the LLM-free agent), `detect.py` (the two pure anomaly checks), `notify.py` + `email.py` (alert row + best-effort SES) |
 | `verity/src/verity/` | SDK — `client.py`, `transport.py`, `serialize.py`, `fixture.py`, `monitor.py`, `environment.py`, `cli.py` |
 | `verity/tests/` | 48 tests, same conventions as `server/tests/` |
 | `client/src/app/page.tsx` | the intake form — the one client component |
