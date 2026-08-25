@@ -336,7 +336,13 @@ class SupabaseMetadataStore:
         return result.data or []
 
     def find_models_by_user(self, *, user_id):
-        result = self.client.table("model").select("*").eq("user_id", user_id).execute()
+        result = (
+            self.client.table("model")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
         return result.data or []
 
     def find_model_versions(self, *, model_id):

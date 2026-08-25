@@ -53,3 +53,33 @@ metric-name and missing-`y_proba` cases already use, e.g. `{"metric": metric, "r
 `metric_set`. `apply_thresholds()` already treats a skipped metric as a failed threshold
 by its own existing rule — so a genuinely-unmeasurable metric would still correctly show
 up as a threshold failure, it just wouldn't take every other metric down with it.
+
+---
+
+## 2. `/models/{id}` addresses two different entity types depending on the route
+
+**Where:** `server/main.py` — `GET /models/{model_version_id}/telemetry`, `GET
+/models/{model_version_id}/alerts` (pre-existing, from Falcon) take a **version** id;
+`GET /models/{model_id}/versions` (added by the model registry dashboard work) takes a
+**model** id. All three share the `/models/{id}/...` prefix.
+
+**What's wrong:** the two entity types are addressed identically at the URL level,
+disambiguated only by the differing suffix (`/telemetry`, `/alerts` vs. `/versions`).
+Not a live bug — nothing routes incorrectly — but a new contributor reading the route
+table cold would have no way to tell `{model_version_id}` from `{model_id}` apart without
+reading each handler's body.
+
+**Why it wasn't fixed now:** the newer, better-named convention (`/model_versions/{id}`
+for version-scoped resources) was used for every route added by this work. Renaming the
+two older routes to match would be a breaking change to the frontend's existing
+`telemetry-panel.tsx`/`traces-panel.tsx`/`alerts-panel.tsx` fetch calls, out of scope for
+a read-only registry-browsing feature.
+
+**Cost of leaving it:** purely a readability/discoverability cost for future contributors
+reading `main.py`'s route table; no functional risk.
+
+**Shape of the eventual fix:** rename the two older routes to
+`/model_versions/{model_version_id}/telemetry` and
+`/model_versions/{model_version_id}/alerts`, updating the three frontend fetch calls that
+target them. Natural to bundle with V1.5's auth work, since that work already touches
+every route's request shape.

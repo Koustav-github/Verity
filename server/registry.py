@@ -28,7 +28,11 @@ def list_models(*, user_id, metadata_store):
 
 
 def list_versions(*, model_id, metadata_store):
-    return metadata_store.find_model_versions(model_id=model_id)
+    versions = metadata_store.find_model_versions(model_id=model_id)
+    return [
+        {"id": v["id"], "status": v["status"], "created_at": v.get("created_at")}
+        for v in versions
+    ]
 
 
 def get_version_detail(*, model_version_id, metadata_store):

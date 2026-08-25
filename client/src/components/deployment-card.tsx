@@ -61,6 +61,24 @@ export function DeploymentCard({ deployment }: { deployment: Deployment }) {
           shortly.
         </p>
       )}
+
+      {deployment.status === "stopped" && (
+        <>
+          <div className="flex items-baseline gap-2 py-1">
+            <span className="shrink-0 text-ink-soft">status</span>
+            <span className="grow border-b border-dotted border-rule translate-y-[-3px]" />
+            <span className="shrink-0 font-medium text-ink-soft">stopped</span>
+          </div>
+          <div className="flex items-baseline gap-2 py-1">
+            <span className="shrink-0 text-ink-soft">image</span>
+            <span className="grow border-b border-dotted border-rule translate-y-[-3px]" />
+            <span className="shrink-0 font-medium">{deployment.image_tag}</span>
+          </div>
+          <p className="mt-2 text-xs text-ink-soft">
+            Replaced by a newer production version — this version no longer serves traffic.
+          </p>
+        </>
+      )}
     </div>
   );
 }

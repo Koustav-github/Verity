@@ -384,3 +384,10 @@ the record is being maintained after the reboot
     - Out of scope, named in the design spec: run comparison, metric-over-time charts,
       search/filtering, tagging, and promotion/staging buttons — browse, detail, and
       download only, not a full MLflow reimplementation.
+    - **Accepted risk, not solved here:** the download route makes a model's artifact
+      bytes reachable by anyone who can reach the server and guess or already knows a
+      `user_id` — the list routes enumerate model/version ids from there, so nothing
+      after that first guess needs guessing. The 15-minute presigned-URL expiry bounds
+      how long a *leaked* URL keeps working; it does not gate who can mint one. Same
+      standing "no auth until V1.5" decision every other route already carries, named
+      here because this is the first route that hands back the underlying file.

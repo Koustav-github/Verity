@@ -1,5 +1,3 @@
-import pytest
-
 from registry import get_download_urls, get_version_detail, list_models, list_versions
 
 
@@ -115,12 +113,24 @@ def test_list_models_returns_an_empty_list_for_an_unknown_user():
     assert list_models(user_id="nobody", metadata_store=store) == []
 
 
-def test_list_versions_returns_the_stores_ordering_unchanged():
+def test_list_versions_projects_only_id_status_and_created_at():
     store = FakeMetadataStore(
         versions={
             "mdl_1": [
-                {"id": "mv_2", "status": "production", "created_at": "2026-08-02T00:00:00+00:00"},
-                {"id": "mv_1", "status": "archived", "created_at": "2026-08-01T00:00:00+00:00"},
+                {
+                    "id": "mv_2",
+                    "status": "production",
+                    "created_at": "2026-08-02T00:00:00+00:00",
+                    "artifact_sha256": "should-not-be-exposed",
+                    "user_id": "u_1",
+                },
+                {
+                    "id": "mv_1",
+                    "status": "archived",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                    "artifact_sha256": "also-should-not-be-exposed",
+                    "user_id": "u_1",
+                },
             ]
         }
     )
