@@ -22,6 +22,7 @@ from storage.models.s3 import S3BlobStore
 from storage.models.supabase import SupabaseMetadataStore
 from serving.sink import TelemetrySink
 from telemetry import summarize
+import registry
 
 load_dotenv(Path(__file__).parent / ".env")
 
@@ -46,13 +47,14 @@ TELEMETRY_READ_LIMIT = 10_000
 TELEMETRY_TRACE_LIMIT = 50
 
 @lru_cache
+def get_blob_store():
+    return S3BlobStore(bucket=os.environ["S3_BUCKET"], region=os.environ["S3_REGION"])
+
+
+@lru_cache
 def get_build_artifact():
-    blob_store = S3BlobStore(
-        bucket=os.environ["S3_BUCKET"],
-        region=os.environ["S3_REGION"],
-    )
     metadata_store = SupabaseMetadataStore()
-    return partial(build_artifact, blob_store=blob_store, metadata_store=metadata_store)
+    return partial(build_artifact, blob_store=get_blob_store(), metadata_store=metadata_store)
 
 @lru_cache
 def get_metadata_store():
@@ -202,6 +204,48 @@ async def read_alerts(
 ):
     alerts = metadata_store.find_alert_events(model_version_id=model_version_id)
     return {"model_version_id": model_version_id, "alerts": alerts}
+
+
+@app.get("/users/{user_id}/models")
+async def list_models(user_id: str, metadata_store=Depends(get_metadata_store)):
+    return {
+        "user_id": user_id,
+        "models": registry.list_models(user_id=user_id, metadata_store=metadata_store),
+    }
+
+
+@app.get("/models/{model_id}/versions")
+async def list_versions(model_id: str, metadata_store=Depends(get_metadata_store)):
+    return {
+        "model_id": model_id,
+        "versions": registry.list_versions(model_id=model_id, metadata_store=metadata_store),
+    }
+
+
+@app.get("/model_versions/{model_version_id}")
+async def read_version_detail(
+    model_version_id: str, metadata_store=Depends(get_metadata_store)
+):
+    detail = registry.get_version_detail(
+        model_version_id=model_version_id, metadata_store=metadata_store
+    )
+    if detail is None:
+        raise HTTPException(404, f"no model version {model_version_id!r}")
+    return detail
+
+
+@app.get("/model_versions/{model_version_id}/download-urls")
+async def read_download_urls(
+    model_version_id: str,
+    metadata_store=Depends(get_metadata_store),
+    blob_store=Depends(get_blob_store),
+):
+    urls = registry.get_download_urls(
+        model_version_id=model_version_id, metadata_store=metadata_store, blob_store=blob_store
+    )
+    if urls is None:
+        raise HTTPException(404, f"no model version {model_version_id!r}")
+    return urls
 
 
 @app.post("/users/{user_id}/models/{name}/predict")

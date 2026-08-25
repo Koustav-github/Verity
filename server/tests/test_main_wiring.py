@@ -8,6 +8,7 @@ def test_get_build_artifact_wires_real_s3_and_supabase_stores(monkeypatch):
     monkeypatch.setenv("S3_REGION", "us-east-1")
     monkeypatch.setenv("SUPABASE_URL", "http://supabase.test")
     monkeypatch.setenv("SUPABASE_KEY", "test-key")
+    main.get_blob_store.cache_clear()
     main.get_build_artifact.cache_clear()
 
     build_artifact_fn = main.get_build_artifact()

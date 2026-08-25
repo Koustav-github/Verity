@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from main import TELEMETRY_TRACE_LIMIT, app, get_build_artifact, get_metadata_store
+from main import TELEMETRY_TRACE_LIMIT, app, get_blob_store, get_build_artifact, get_metadata_store
 
 
 def test_ingest_allows_cross_origin_requests_from_the_local_frontend():
@@ -506,3 +506,167 @@ def test_get_alerts_returns_the_stored_rows_for_the_version():
     body = response.json()
     assert body["model_version_id"] == "mv_1"
     assert body["alerts"][0]["kind"] == "systemic"
+
+
+def test_listing_models_returns_every_model_for_that_user():
+    class FakeStore:
+        def find_models_by_user(self, *, user_id):
+            return [
+                {
+                    "id": "mdl_1",
+                    "name": "fraud",
+                    "model_class": "LogisticRegression",
+                    "task_type": "classification",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                }
+            ]
+
+        def find_production_version(self, *, model_id):
+            return {"id": "mv_prod"}
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/users/u_1/models")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["user_id"] == "u_1"
+    assert body["models"][0]["id"] == "mdl_1"
+    assert body["models"][0]["production_version_id"] == "mv_prod"
+
+
+def test_listing_models_returns_an_empty_list_for_an_unknown_user():
+    class FakeStore:
+        def find_models_by_user(self, *, user_id):
+            return []
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/users/nobody/models")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["models"] == []
+
+
+def test_listing_versions_returns_every_version_of_a_model():
+    class FakeStore:
+        def find_model_versions(self, *, model_id):
+            return [
+                {"id": "mv_2", "status": "production", "created_at": "2026-08-02T00:00:00+00:00"},
+                {"id": "mv_1", "status": "archived", "created_at": "2026-08-01T00:00:00+00:00"},
+            ]
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/models/mdl_1/versions")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_id"] == "mdl_1"
+    assert [v["id"] for v in body["versions"]] == ["mv_2", "mv_1"]
+
+
+def test_reading_version_detail_returns_the_full_bundle():
+    class FakeStore:
+        def find_model_version(self, *, model_version_id):
+            return {
+                "id": model_version_id,
+                "artifact_uri": "s3://verity-artifacts/abc",
+                "status": "production",
+                "model_id": "mdl_1",
+            }
+
+        def find_manifest(self, *, model_version_id):
+            return {"framework": "sklearn"}
+
+        def find_eval_run(self, *, model_version_id):
+            return {"id": "evr_1", "verdict": "pass"}
+
+        def find_monitoring_config(self, *, model_version_id):
+            return None
+
+        def find_deployment(self, *, model_version_id):
+            return None
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/model_versions/mv_1")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_version_id"] == "mv_1"
+    assert body["manifest"] == {"framework": "sklearn"}
+    assert body["eval_run"]["verdict"] == "pass"
+
+
+def test_reading_version_detail_404s_for_an_unknown_version():
+    class FakeStore:
+        def find_model_version(self, *, model_version_id):
+            return None
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    client = TestClient(app)
+
+    response = client.get("/model_versions/mv_unknown")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
+
+
+def test_reading_download_urls_returns_presigned_links():
+    class FakeStore:
+        def find_model_version(self, *, model_version_id):
+            return {"id": model_version_id, "artifact_sha256": "artifact_hash", "model_id": "mdl_1"}
+
+        def find_eval_run(self, *, model_version_id):
+            return {"fixture": {"sha256": "fixture_hash"}}
+
+    class FakeBlobStore:
+        def presigned_url(self, sha256, expires_in=900):
+            return f"https://fake-bucket.s3.amazonaws.com/{sha256}"
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    app.dependency_overrides[get_blob_store] = lambda: FakeBlobStore()
+    client = TestClient(app)
+
+    response = client.get("/model_versions/mv_1/download-urls")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifact_url"] == "https://fake-bucket.s3.amazonaws.com/artifact_hash"
+    assert body["fixture_url"] == "https://fake-bucket.s3.amazonaws.com/fixture_hash"
+
+
+def test_reading_download_urls_404s_for_an_unknown_version():
+    class FakeStore:
+        def find_model_version(self, *, model_version_id):
+            return None
+
+    class FakeBlobStore:
+        def presigned_url(self, sha256, expires_in=900):
+            return "unused"
+
+    app.dependency_overrides[get_metadata_store] = lambda: FakeStore()
+    app.dependency_overrides[get_blob_store] = lambda: FakeBlobStore()
+    client = TestClient(app)
+
+    response = client.get("/model_versions/mv_unknown/download-urls")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 404
