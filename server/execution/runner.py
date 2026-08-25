@@ -72,6 +72,14 @@ def _to_list(value):
 def _run_predict(model, job):
     X = job["X"]
 
+    # A model's first predict() call after unpickling can carry real one-time setup
+    # cost -- thread-pool init, lazy compilation, memory-mapping -- that has nothing
+    # to do with its actual steady-state throughput. LightGBM's Booster is a concrete
+    # case: measured ~0.6ms per-row latency once warm, but its very first call on an
+    # 8-row batch took ~1.5s, which timing as "throughput" would have measured as
+    # cold-start cost, not serving speed. This untimed call absorbs that cost first.
+    model.predict(X[:1])
+
     batch_started = time.perf_counter()
     y_pred = model.predict(X)
     batch_elapsed = time.perf_counter() - batch_started

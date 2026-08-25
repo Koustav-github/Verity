@@ -16,7 +16,6 @@ dist/
 # Demo. demo/serve/ (the hand-written ONNX reference service, predating api-fication's
 # own generated template) was removed once it stopped exercising anything the real
 # pipeline uses. The dataset, notebooks, and local MLflow scratch DB stay untracked.
-#
 # Scoped to the root (a bare "demo/" also matched client/public/demo/, which holds
 # committed static assets for the frontend's demo flow).
 /demo/*

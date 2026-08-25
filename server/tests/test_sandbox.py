@@ -1,3 +1,5 @@
+import time
+
 import cloudpickle
 import pytest
 from sklearn.linear_model import LogisticRegression
@@ -49,6 +51,31 @@ def test_execute_measures_the_full_systemic_sample_the_scoring_engine_expects():
     assert result["resource"]["peak_memory_mb"] > 0
     assert result["resource"]["throughput_rps"] > 0
     assert result["resource"]["cpu_time_s"] >= 0
+
+
+def test_execute_warms_up_the_model_before_timing_throughput():
+    """LightGBM's Booster (and any model with lazy first-call setup — thread-pool
+    init, memory-mapping) pays a real one-time cost on its very first predict()
+    after unpickling. Timing that first call as if it were steady-state throughput
+    would measure cold-start latency, not the model's actual serving speed."""
+
+    class SlowFirstCall:
+        def __init__(self):
+            self._warm = False
+
+        def predict(self, X):
+            if not self._warm:
+                self._warm = True
+                time.sleep(0.5)
+            return [0 for _ in X]
+
+    payload = cloudpickle.dumps(SlowFirstCall())
+
+    result = execute(model_payload=payload, X=[[0.0], [1.0], [2.0], [3.0]])
+
+    # Unwarmed, 4 rows over >=0.5s is at most 8 rps. Once warm, this trivial model
+    # returns instantly, so a fair measurement should be orders of magnitude higher.
+    assert result["resource"]["throughput_rps"] > 50
 
 
 def test_the_sandbox_cannot_read_the_servers_credentials(monkeypatch):

@@ -88,6 +88,20 @@ def test_the_dockerfile_runs_as_a_non_root_user(tmp_path):
     assert "USER appuser" in (tmp_path / "Dockerfile").read_text()
 
 
+def test_the_dockerfile_installs_libgomp_before_the_pip_layer(tmp_path):
+    # LightGBM's compiled Booster dynamically links libgomp.so.1 (OpenMP) at import
+    # time -- pip installs the wheel, not the system library, and python:*-slim
+    # doesn't carry it. Confirmed live: a real LightGBM deploy 500'd on container
+    # startup with "OSError: libgomp.so.1: cannot open shared object file" before
+    # this line existed. Small and harmless for models that don't need it.
+    _render(tmp_path)
+
+    text = (tmp_path / "Dockerfile").read_text()
+
+    assert "libgomp1" in text
+    assert text.index("libgomp1") < text.index("RUN pip install")
+
+
 def test_the_copied_app_is_the_checked_in_template_not_a_generated_string(tmp_path):
     _render(tmp_path)
 

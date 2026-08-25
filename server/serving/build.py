@@ -25,6 +25,13 @@ ENV PYTHONUNBUFFERED=1 \\
 
 WORKDIR /app
 
+# LightGBM's compiled Booster dynamically links libgomp.so.1 (OpenMP) at import
+# time; pip installs the wheel, not the system library, and python:*-slim doesn't
+# carry it. Small and harmless for models that don't need it -- cheaper than
+# special-casing which frameworks require which native libraries.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \\
+    && rm -rf /var/lib/apt/lists/*
+
 # Dependencies in their own layer, before the model: a second model on the same
 # dependency set then reuses this layer and builds in seconds instead of minutes.
 COPY requirements.txt .
