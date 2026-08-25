@@ -192,3 +192,62 @@ export async function fetchAlerts(
   const body: { model_version_id: string; alerts: AlertEvent[] } = await response.json();
   return body.alerts;
 }
+
+export type ModelSummary = {
+  id: string;
+  name: string;
+  model_class: string | null;
+  task_type: string | null;
+  created_at: string;
+  production_version_id: string | null;
+};
+
+export async function fetchModels(userId: string): Promise<ModelSummary[]> {
+  const response = await fetch(`${API_BASE}/users/${encodeURIComponent(userId)}/models`);
+  if (!response.ok) {
+    throw new IngestError(`Couldn't list models (${response.status}).`);
+  }
+  const body: { user_id: string; models: ModelSummary[] } = await response.json();
+  return body.models;
+}
+
+export type VersionSummary = {
+  id: string;
+  status: string;
+  created_at: string;
+};
+
+export async function fetchVersions(modelId: string): Promise<VersionSummary[]> {
+  const response = await fetch(`${API_BASE}/models/${encodeURIComponent(modelId)}/versions`);
+  if (!response.ok) {
+    throw new IngestError(`Couldn't list versions (${response.status}).`);
+  }
+  const body: { model_id: string; versions: VersionSummary[] } = await response.json();
+  return body.versions;
+}
+
+export async function fetchVersionDetail(modelVersionId: string): Promise<IngestResult> {
+  const response = await fetch(
+    `${API_BASE}/model_versions/${encodeURIComponent(modelVersionId)}`,
+  );
+  if (!response.ok) {
+    throw new IngestError(`Couldn't read version detail (${response.status}).`);
+  }
+  return response.json();
+}
+
+export type DownloadUrls = {
+  model_version_id: string;
+  artifact_url: string;
+  fixture_url: string | null;
+};
+
+export async function fetchDownloadUrls(modelVersionId: string): Promise<DownloadUrls> {
+  const response = await fetch(
+    `${API_BASE}/model_versions/${encodeURIComponent(modelVersionId)}/download-urls`,
+  );
+  if (!response.ok) {
+    throw new IngestError(`Couldn't get download links (${response.status}).`);
+  }
+  return response.json();
+}
