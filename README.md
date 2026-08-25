@@ -125,10 +125,9 @@ only, and an active part of the build rather than a finished component waiting o
 
 `client/` has a minimal intake form for exercising the loop by hand — upload a model
 (bundled demo included, no Python required) and watch all four agents' real output render,
-including a live-traffic panel for a monitored version. It's a test harness, not a dashboard:
-you can see the model you just uploaded, not browse ones you uploaded before. `demo/serve/`
-holds the hand-written Titanic ONNX service used as the first real V1 test subject — the
-template api-fication generates from, kept as the reference for what "correct" looks like.
+including a live-traffic panel for a monitored version. A Models tab sits alongside it now
+for browsing past uploads (see the model registry section above), so this stopped being
+upload-only partway through V1.
 
 ## Repo layout
 
@@ -138,7 +137,6 @@ template api-fication generates from, kept as the reference for what "correct" l
 | `server/` | FastAPI app, orchestrator, storage adapters, sandbox, Alembic migrations — `agents/` lives inside it now, since nothing outside `server/` ever imports the agents |
 | `verity/` | the client SDK (`assemble`, `monitor`, CLI) |
 | `client/` | Next.js intake form for exercising the loop by hand |
-| `demo/serve/` | the hand-written reference service |
 | `docs/` | [architecture](docs/architecture.md) · [Schemas](docs/Schemas.md) · [Metrics](docs/Metrics.md) · [progression](docs/progression.md) |
 | `docs/superpowers/` | dated design specs and implementation plans, one pair per agent |
 | `docs/reference/` | study notes on other systems ([MLflow](docs/reference/mlflow.md)) |

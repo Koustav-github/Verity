@@ -1080,7 +1080,6 @@ verity.monitor(model, model_version_id="mv_...")     → MonitoredModel proxy
 | `client/src/app/page.tsx` | the intake form — the one client component |
 | `client/src/lib/verity.ts` | browser-side hashing + `/ingest` call |
 | `client/public/demo/` | pre-baked demo model + fixture |
-| `demo/serve/` | the hand-written Titanic ONNX service — reference for what api-fication generates |
 | `docs/Schemas.md` | the data contract — status enum, table columns, MCP connection shape |
 | `docs/Metrics.md` | the Atlas — task → metric taxonomy, transcribed into `resolve.py` |
 | `docs/progression.md` | the running build log, entry per milestone |

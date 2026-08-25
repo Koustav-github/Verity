@@ -13,19 +13,13 @@ dist/
 .env.test
 *.env
 
-# Demo. The serving code under demo/serve/ *is* tracked: it is the only working
-# model-serving code in the repo and the template api-fication builds from. The dataset,
-# the notebooks, and the local MLflow scratch DB are not.
+# Demo. demo/serve/ (the hand-written ONNX reference service, predating api-fication's
+# own generated template) was removed once it stopped exercising anything the real
+# pipeline uses. The dataset, notebooks, and local MLflow scratch DB stay untracked.
 #
 # Scoped to the root (a bare "demo/" also matched client/public/demo/, which holds
 # committed static assets for the frontend's demo flow).
 /demo/*
-!/demo/serve/
-/demo/serve/*
-!/demo/serve/Dockerfile
-!/demo/serve/app.py
-!/demo/serve/requirements.txt
-!/demo/serve/model.onnx
 
 # Editor / tooling
 .vscode/
