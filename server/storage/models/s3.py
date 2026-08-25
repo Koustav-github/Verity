@@ -30,3 +30,10 @@ class S3BlobStore:
     def put(self, sha256: str, payload: bytes) -> str:
         self.client.put_object(Bucket=self.bucket, Key=sha256, Body=payload)
         return f"s3://{self.bucket}/{sha256}"
+
+    def presigned_url(self, sha256: str, expires_in: int = 900) -> str:
+        return self.client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self.bucket, "Key": sha256},
+            ExpiresIn=expires_in,
+        )

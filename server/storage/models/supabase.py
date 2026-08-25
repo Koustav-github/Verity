@@ -334,3 +334,57 @@ class SupabaseMetadataStore:
             .execute()
         )
         return result.data or []
+
+    def find_models_by_user(self, *, user_id):
+        result = self.client.table("model").select("*").eq("user_id", user_id).execute()
+        return result.data or []
+
+    def find_model_versions(self, *, model_id):
+        result = (
+            self.client.table("model_version")
+            .select("*")
+            .eq("model_id", model_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return result.data or []
+
+    def find_model_version(self, *, model_version_id):
+        result = (
+            self.client.table("model_version")
+            .select("*")
+            .eq("id", model_version_id)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    def find_manifest(self, *, model_version_id):
+        result = (
+            self.client.table("manifest")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    def find_eval_run(self, *, model_version_id):
+        # One eval_run per version in every path that exists today — ordering by
+        # started_at is defensive, not because multiple rows are expected.
+        result = (
+            self.client.table("eval_run")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .order("started_at", desc=True)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    def find_deployment(self, *, model_version_id):
+        result = (
+            self.client.table("deployment")
+            .select("*")
+            .eq("model_version_id", model_version_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return result.data[0] if result.data else None

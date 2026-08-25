@@ -813,3 +813,148 @@ def test_find_alert_events_returns_rows_for_the_version_newest_first():
     alerts = store.find_alert_events(model_version_id="mv_1")
 
     assert [a["id"] for a in alerts] == ["alrt_2", "alrt_1"]
+
+
+def test_find_models_by_user_returns_every_model_for_that_user():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "model": [
+                {"id": "mdl_1", "user_id": "u_1", "name": "fraud"},
+                {"id": "mdl_2", "user_id": "u_2", "name": "churn"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    models = store.find_models_by_user(user_id="u_1")
+
+    assert models == [{"id": "mdl_1", "user_id": "u_1", "name": "fraud"}]
+    assert fake_client.calls == [("model", "select", "*", [("user_id", "u_1")])]
+
+
+def test_find_models_by_user_returns_an_empty_list_for_an_unknown_user():
+    fake_client = FakeSupabaseClient(rows={"model": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_models_by_user(user_id="nobody") == []
+
+
+def test_find_model_versions_orders_newest_first():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "model_version": [
+                {"id": "mv_1", "model_id": "mdl_1", "created_at": "2026-08-01T00:00:00+00:00"},
+                {"id": "mv_2", "model_id": "mdl_1", "created_at": "2026-08-02T00:00:00+00:00"},
+                {"id": "mv_3", "model_id": "mdl_2", "created_at": "2026-08-03T00:00:00+00:00"},
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    versions = store.find_model_versions(model_id="mdl_1")
+
+    assert [v["id"] for v in versions] == ["mv_2", "mv_1"]
+    assert fake_client.calls == [
+        ("model_version", "select", "*", [("model_id", "mdl_1")])
+    ]
+
+
+def test_find_model_version_returns_the_row_by_id():
+    fake_client = FakeSupabaseClient(
+        rows={"model_version": [{"id": "mv_1", "status": "production"}]}
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_model_version(model_version_id="mv_1") == {
+        "id": "mv_1",
+        "status": "production",
+    }
+
+
+def test_find_model_version_returns_none_when_missing():
+    fake_client = FakeSupabaseClient(rows={"model_version": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_model_version(model_version_id="mv_unknown") is None
+
+
+def test_find_manifest_returns_the_row_for_that_version():
+    fake_client = FakeSupabaseClient(
+        rows={"manifest": [{"id": "mf_1", "model_version_id": "mv_1", "framework": "sklearn"}]}
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    manifest = store.find_manifest(model_version_id="mv_1")
+
+    assert manifest == {"id": "mf_1", "model_version_id": "mv_1", "framework": "sklearn"}
+
+
+def test_find_manifest_returns_none_when_the_version_has_none():
+    fake_client = FakeSupabaseClient(rows={"manifest": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_manifest(model_version_id="mv_1") is None
+
+
+def test_find_eval_run_returns_the_most_recent_row():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "eval_run": [
+                {
+                    "id": "evr_1",
+                    "model_version_id": "mv_1",
+                    "started_at": "2026-08-01T00:00:00+00:00",
+                },
+                {
+                    "id": "evr_2",
+                    "model_version_id": "mv_1",
+                    "started_at": "2026-08-02T00:00:00+00:00",
+                },
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    eval_run = store.find_eval_run(model_version_id="mv_1")
+
+    assert eval_run["id"] == "evr_2"
+
+
+def test_find_eval_run_returns_none_when_never_evaluated():
+    fake_client = FakeSupabaseClient(rows={"eval_run": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_eval_run(model_version_id="mv_1") is None
+
+
+def test_find_deployment_returns_the_most_recent_row_regardless_of_status():
+    fake_client = FakeSupabaseClient(
+        rows={
+            "deployment": [
+                {
+                    "id": "dep_1",
+                    "model_version_id": "mv_1",
+                    "status": "stopped",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                },
+                {
+                    "id": "dep_2",
+                    "model_version_id": "mv_1",
+                    "status": "live",
+                    "created_at": "2026-08-02T00:00:00+00:00",
+                },
+            ]
+        }
+    )
+    store = SupabaseMetadataStore(client=fake_client)
+
+    deployment = store.find_deployment(model_version_id="mv_1")
+
+    assert deployment["id"] == "dep_2"
+
+
+def test_find_deployment_returns_none_when_never_deployed():
+    fake_client = FakeSupabaseClient(rows={"deployment": []})
+    store = SupabaseMetadataStore(client=fake_client)
+
+    assert store.find_deployment(model_version_id="mv_1") is None

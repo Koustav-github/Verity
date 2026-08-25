@@ -74,3 +74,40 @@ def test_credentials_are_left_to_the_boto3_chain_rather_than_defaulted(monkeypat
 
     assert "aws_access_key_id" not in captured
     assert "aws_secret_access_key" not in captured
+
+
+class FakeS3ClientWithPresign(FakeS3Client):
+    def __init__(self):
+        super().__init__()
+        self.presign_calls = []
+
+    def generate_presigned_url(self, operation, Params, ExpiresIn):
+        self.presign_calls.append(
+            {"operation": operation, "Params": Params, "ExpiresIn": ExpiresIn}
+        )
+        return f"https://{Params['Bucket']}.s3.amazonaws.com/{Params['Key']}?X-Amz-Expires={ExpiresIn}"
+
+
+def test_presigned_url_requests_a_get_object_url_for_the_sha256_key():
+    fake_client = FakeS3ClientWithPresign()
+    store = S3BlobStore(bucket="verity-artifacts", region="us-east-1", client=fake_client)
+
+    url = store.presigned_url("abc123")
+
+    assert fake_client.presign_calls == [
+        {
+            "operation": "get_object",
+            "Params": {"Bucket": "verity-artifacts", "Key": "abc123"},
+            "ExpiresIn": 900,
+        }
+    ]
+    assert url == "https://verity-artifacts.s3.amazonaws.com/abc123?X-Amz-Expires=900"
+
+
+def test_presigned_url_accepts_a_custom_expiry():
+    fake_client = FakeS3ClientWithPresign()
+    store = S3BlobStore(bucket="verity-artifacts", region="us-east-1", client=fake_client)
+
+    store.presigned_url("abc123", expires_in=60)
+
+    assert fake_client.presign_calls[0]["ExpiresIn"] == 60
