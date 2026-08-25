@@ -883,6 +883,43 @@ with real `Origin` headers) confirmed all three response shapes the UI renders �
 promotion to `production`, an archived-replacement, and a deduplicated repeat — against
 genuine server responses, not fixtures.
 
+### 10.1 The Models tab — browse, detail, download
+
+Everything before this was upload-and-forget: one result, gone on navigation. Four new
+read-only routes (`server/main.py`) close that gap, backed by a new `server/registry.py`
+module rather than an extension of `orchestrator.py` — deliberately, because
+`orchestrator.build_artifact()` builds its response from values it just computed
+mid-pipeline, while `registry.py`'s functions build the identical *shape* by re-querying
+already-stored rows, for a version that may have been created any time in the past. One
+assembles from memory during a write; the other assembles from storage for a read.
+
+`GET /users/{user_id}/models` and `GET /models/{model_id}/versions` return an empty list
+for an unknown user/model rather than 404 — there's no user table to check existence
+against, so an empty list is the honest answer. `GET /model_versions/{model_version_id}`
+and its sibling `.../download-urls` do 404, since those are keyed to one specific thing the
+frontend just clicked on.
+
+The detail route's response is deliberately shaped to match the frontend's existing
+`IngestResult` type field-for-field (`model_version_id`, `artifact_uri`, `status`,
+`manifest`, `eval_run`, `model_id`, `monitoring_config`, `deployment`) — the same shape
+`POST /ingest` already returns for a freshly-created version. That's what lets
+`client/src/components/version-detail.tsx` reuse `EvidenceReport` completely unmodified: one
+component renders both "the version you just uploaded" and "a version you're looking back
+at," because both routes hand it the identical shape.
+
+Downloads are presigned S3 URLs (`S3BlobStore.presigned_url`, `server/storage/models/s3.py`),
+generated on request and expiring in 15 minutes — the artifact's URL from
+`model_version.artifact_sha256`, the fixture's from `eval_run.fixture.sha256` when one
+exists. No file bytes pass through the Verity server; the browser downloads directly from
+S3, matching how MLflow itself handles an S3-backed artifact store.
+
+Live-verified against real infrastructure via the actual `verity` SDK (not the browser's demo
+form): two versions of one model uploaded back to back — one that failed its eval gate, one
+promoted to `production` with a real local Docker deployment — then confirmed through the new
+routes: both versions listed newest-first under their shared model, the detail route rendering
+correctly for both the passing and the failing version, and a presigned artifact URL that
+produced a real, working `200` download of the actual pickled bytes.
+
 ---
 
 ## 11. Repo-hygiene bugs found by building the system, not by looking for them

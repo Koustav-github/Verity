@@ -80,6 +80,19 @@ IP directly. See `docs/architecture.md` §9.9 for the full account, including a 
 work found and fixed — `docker-py`'s image push does not raise on failure by default, so an
 early version of the ECR push step silently produced no image while reporting success.
 
+**The frontend now has a Models tab — browse past uploads, not just the one you just
+made.** `client/`'s upload form used to be the whole app: upload, see one result, navigate
+away, it's gone. Four new read-only routes (`GET /users/{user_id}/models`, `GET
+/models/{model_id}/versions`, `GET /model_versions/{model_version_id}`, `GET
+/model_versions/{model_version_id}/download-urls`) let you list a user's models, see a
+model's full version history — including archived versions — and reopen any past version's
+full detail. The detail view reuses the exact same `EvidenceReport` component the upload
+flow already renders, unmodified, because the new detail route's response is shaped to
+match `IngestResult` exactly. Artifact and fixture downloads are presigned S3 URLs,
+generated on request and expiring in 15 minutes — the same mechanism MLflow itself uses for
+an S3-backed artifact store, and the first way to get a model's bytes back out of Verity
+without going into the AWS Console by hand.
+
 Selecting `fargate` also requires four more env vars — `VERITY_FARGATE_ECR_URI`,
 `VERITY_FARGATE_EXECUTION_ROLE_ARN`, `VERITY_FARGATE_SECURITY_GROUP` (all required, no
 default), and `VERITY_FARGATE_SUBNETS` (comma-separated; defaults to none, which then

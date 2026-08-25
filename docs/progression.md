@@ -349,3 +349,38 @@ the record is being maintained after the reboot
       idle-shutdown (a continuously-billed task for as long as it's the live version); a
       real cold-start on every replacement, on top of whatever the image build/push took; a
       fresh public IP per task with no load balancer or stable DNS name in front of it.
+
+12. The frontend gets a Models tab — a real browsable registry, not just an upload form that
+    forgets what you gave it. Four new read-only routes (`GET /users/{user_id}/models`,
+    `GET /models/{model_id}/versions`, `GET /model_versions/{model_version_id}`, `GET
+    /model_versions/{model_version_id}/download-urls`) back a new `server/registry.py`
+    module, kept deliberately separate from `orchestrator.py` — one assembles a response
+    from values just computed mid-pipeline, the other re-queries already-stored rows for a
+    version created any time in the past.
+    - The two list routes return an empty list for an unknown user/model rather than
+      404 (no user table to check existence against); the two detail routes 404, since
+      those are keyed to one specific thing just clicked on. Deliberately asymmetric, not
+      an inconsistency.
+    - The detail route's response is shaped to match the frontend's existing `IngestResult`
+      type exactly, which is what lets `client/src/components/version-detail.tsx` reuse
+      `EvidenceReport` completely unmodified — the same component now renders both a
+      just-uploaded result and a version pulled back up later.
+    - Downloads are presigned S3 URLs (15-minute expiry), generated on request — no file
+      bytes pass through the Verity server, matching how MLflow itself handles an
+      S3-backed artifact store.
+    - **Live-verified via the real `verity` SDK**, not the browser's demo form: two
+      versions of one model uploaded back to back (one failed its eval gate, one promoted
+      to `production` with a real local Docker deployment), then confirmed through the new
+      routes end to end — both versions listed newest-first under their shared model, the
+      detail route rendering correctly for both the passing and failing version, and a
+      presigned artifact URL that produced a real `200` download of the actual pickled
+      bytes.
+    - **Found and fixed along the way, not a code bug:** a fresh worktree's venv had never
+      had `uv sync --extra dev` run, so `uv run pytest` was silently resolving to some
+      other environment lacking `supabase` — the exact standing gotcha this project's own
+      task briefs already warn about. One test's report was rejected by review for
+      claiming a test count without pasting real command output, which is what caught it;
+      fixed by running the sync once, no code changes needed.
+    - Out of scope, named in the design spec: run comparison, metric-over-time charts,
+      search/filtering, tagging, and promotion/staging buttons — browse, detail, and
+      download only, not a full MLflow reimplementation.
