@@ -59,7 +59,7 @@ export default function Home() {
     <div className="flex flex-1 justify-center px-4 py-6 sm:py-8">
       {/* The intake form is a single column of fields and reads best narrow. The registry
           is a list beside a detail pane and was being strangled by the same width. */}
-      <main className={`w-full ${view === "models" ? "max-w-3xl" : "max-w-xl"}`}>
+      <main className={`w-full ${view === "models" ? "max-w-6xl" : "max-w-xl"}`}>
         <div className="mb-6 flex gap-2 font-mono text-xs uppercase tracking-[0.2em]">
           <button
             type="button"

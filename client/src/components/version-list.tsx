@@ -51,7 +51,7 @@ export function VersionList({
       <button
         type="button"
         onClick={onBack}
-        className="mb-2 text-xs uppercase tracking-[0.2em] text-ink-soft hover:text-brass"
+        className="mb-2 text-xs uppercase tracking-[0.2em] text-ink-soft hover:text-brass lg:hidden"
       >
         ← Back to models
       </button>
