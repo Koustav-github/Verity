@@ -56,7 +56,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-1 justify-center px-4 py-8 sm:py-12">
+    <div className="flex flex-1 justify-center px-4 py-6 sm:py-8">
       {/* The intake form is a single column of fields and reads best narrow. The registry
           is a list beside a detail pane and was being strangled by the same width. */}
       <main className={`w-full ${view === "models" ? "max-w-3xl" : "max-w-xl"}`}>
@@ -95,7 +95,7 @@ export default function Home() {
 
         {view === "upload" && (
           <>
-            <header className="mb-10 border-b-2 border-ink pb-4">
+            <header className="mb-6 border-b-2 border-ink pb-3">
               <p className="text-xs uppercase tracking-[0.3em] text-brass">Intake</p>
               <h1 className="mt-1 font-mono text-2xl font-bold tracking-tight sm:text-3xl">
                 Upload a model. Watch it get gated.
