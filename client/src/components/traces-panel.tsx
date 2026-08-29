@@ -2,16 +2,70 @@
 
 import { useEffect, useState } from "react";
 import { fetchTelemetry, type TelemetryTrace } from "@/lib/verity";
+import { Panel, LeaderRow, RefreshButton } from "./panel";
+import { StatusBadge } from "./status-badge";
 
 function ms(value: number | null) {
   return value == null ? "—" : `${value.toFixed(2)} ms`;
 }
 
-const STATUS_CLASS: Record<TelemetryTrace["status"], string> = {
-  ok: "text-pass",
-  error: "text-fail",
-  timeout: "text-fail",
-};
+/** One call, expandable.
+ *
+ * The row itself carries what you scan for — when, outcome, how slow. The expansion
+ * carries `prediction_id`, which is the only way to report a delayed outcome back
+ * against this call via POST /predictions/{id}/outcomes, and is far too long to sit in
+ * the row without crowding out everything else.
+ */
+function TraceRow({ trace }: { trace: TelemetryTrace }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <li className="border-b border-dotted border-rule last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="flex w-full items-baseline gap-2 py-1.5 text-left text-xs hover:text-brass"
+      >
+        <span aria-hidden className="shrink-0 text-ink-soft">
+          {open ? "▾" : "▸"}
+        </span>
+        <span className="shrink-0 text-ink-soft">
+          {new Date(trace.occurred_at).toLocaleTimeString()}
+        </span>
+        <span className="grow translate-y-[-3px] border-b border-dotted border-rule" />
+        {trace.error_type && (
+          <span className="shrink-0 truncate text-fail">{trace.error_type}</span>
+        )}
+        <StatusBadge status={trace.status} />
+        <span className="w-20 shrink-0 text-right font-medium tabular-nums">
+          {ms(trace.latency_ms)}
+        </span>
+      </button>
+
+      {open && (
+        <div className="mb-2 ml-4 border-l-2 border-rule pl-3 text-xs">
+          <LeaderRow
+            label="prediction_id"
+            value={
+              <span className="break-all">{trace.prediction_id ?? "— (not recorded)"}</span>
+            }
+          />
+          <LeaderRow
+            label="occurred_at"
+            value={new Date(trace.occurred_at).toLocaleString()}
+          />
+          <LeaderRow label="status" value={trace.status} />
+          <LeaderRow label="error_type" value={trace.error_type ?? "—"} />
+          <p className="mt-1 text-[11px] text-ink-soft">
+            Inputs and predictions are recorded server-side but deliberately not served
+            here — every route is unauthenticated until V1.5.
+          </p>
+        </div>
+      )}
+    </li>
+  );
+}
 
 export function TracesPanel({ modelVersionId }: { modelVersionId: string }) {
   const [traces, setTraces] = useState<TelemetryTrace[] | null>(null);
@@ -32,57 +86,31 @@ export function TracesPanel({ modelVersionId }: { modelVersionId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelVersionId]);
 
-  if (error) {
-    return <p className="mt-6 font-mono text-xs text-fail">{error}</p>;
-  }
-  if (!traces) {
-    return <p className="mt-6 font-mono text-xs text-ink-soft">Reading traces…</p>;
-  }
-
   return (
-    <div className="mt-6 border-t border-rule pt-4 font-mono text-sm">
-      <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-xs uppercase tracking-[0.2em] text-brass">
-          Recent calls ({traces.length})
-        </h3>
-        <button
-          type="button"
-          onClick={load}
-          className="border border-ink px-2 py-1 text-[10px] uppercase tracking-[0.2em] hover:bg-ink hover:text-paper"
-        >
-          Refresh
-        </button>
-      </div>
+    <Panel
+      title={`Recent calls${traces ? ` (${traces.length})` : ""}`}
+      action={<RefreshButton onClick={load} />}
+    >
+      {error && <p className="text-xs text-fail">{error}</p>}
+      {!error && !traces && <p className="text-xs text-ink-soft">Reading traces…</p>}
 
-      {traces.length === 0 ? (
+      {traces && traces.length === 0 && (
         <p className="text-xs text-ink-soft">
-          No calls recorded yet — this fills in as `/predict` is called, or as
-          `verity.monitor()` reports from a customer-hosted model.
+          No calls recorded yet — this fills in as <code>/predict</code> is called, or as{" "}
+          <code>verity.monitor()</code> reports from a customer-hosted model.
         </p>
-      ) : (
-        <ul className="space-y-1">
+      )}
+
+      {traces && traces.length > 0 && (
+        <ul>
           {traces.map((trace) => (
-            <li
+            <TraceRow
               key={`${trace.prediction_id ?? "unknown"}_${trace.occurred_at}`}
-              className="flex items-baseline gap-2 text-xs"
-            >
-              <span className="shrink-0 text-ink-soft">
-                {new Date(trace.occurred_at).toLocaleString()}
-              </span>
-              <span className="grow border-b border-dotted border-rule translate-y-[-3px]" />
-              <span className={`shrink-0 uppercase ${STATUS_CLASS[trace.status]}`}>
-                {trace.status}
-              </span>
-              <span className="shrink-0 w-20 text-right font-medium">
-                {ms(trace.latency_ms)}
-              </span>
-              {trace.error_type && (
-                <span className="shrink-0 text-fail">{trace.error_type}</span>
-              )}
-            </li>
+              trace={trace}
+            />
           ))}
         </ul>
       )}
-    </div>
+    </Panel>
   );
 }

@@ -7,6 +7,7 @@ import {
   type QualityAlertDetail,
   type SystemicAlertDetail,
 } from "@/lib/verity";
+import { Panel, RefreshButton } from "./panel";
 
 function describe(alert: AlertEvent): string {
   if (alert.kind === "systemic") {
@@ -37,35 +38,23 @@ export function AlertsPanel({ modelVersionId }: { modelVersionId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelVersionId]);
 
-  if (error) {
-    return <p className="mt-6 font-mono text-xs text-fail">{error}</p>;
-  }
-  if (!alerts) {
-    return <p className="mt-6 font-mono text-xs text-ink-soft">Reading alerts…</p>;
-  }
-
   return (
-    <div className="mt-6 border-t border-rule pt-4 font-mono text-sm">
-      <div className="mb-2 flex items-baseline justify-between">
-        <h3 className="text-xs uppercase tracking-[0.2em] text-brass">
-          Falcon alerts ({alerts.length})
-        </h3>
-        <button
-          type="button"
-          onClick={load}
-          className="border border-ink px-2 py-1 text-[10px] uppercase tracking-[0.2em] hover:bg-ink hover:text-paper"
-        >
-          Refresh
-        </button>
-      </div>
+    <Panel
+      title={`Falcon alerts${alerts ? ` (${alerts.length})` : ""}`}
+      action={<RefreshButton onClick={load} />}
+    >
+      {error && <p className="text-xs text-fail">{error}</p>}
+      {!error && !alerts && <p className="text-xs text-ink-soft">Reading alerts…</p>}
 
-      {alerts.length === 0 ? (
+      {alerts && alerts.length === 0 && (
         <p className="text-xs text-ink-soft">
           None fired. Systemic checks run on live traffic automatically; quality checks
           need 30+ reported outcomes via{" "}
           <code>POST /predictions/{"{"}id{"}"}/outcomes</code>.
         </p>
-      ) : (
+      )}
+
+      {alerts && alerts.length > 0 && (
         <ul className="space-y-2">
           {alerts.map((alert) => (
             <li key={alert.id} className="border-l-2 border-fail pl-3 text-xs">
@@ -87,6 +76,6 @@ export function AlertsPanel({ modelVersionId }: { modelVersionId: string }) {
           ))}
         </ul>
       )}
-    </div>
+    </Panel>
   );
 }

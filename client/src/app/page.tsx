@@ -56,8 +56,10 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-1 justify-center px-4 py-12 sm:py-20">
-      <main className="w-full max-w-xl">
+    <div className="flex flex-1 justify-center px-4 py-12 sm:py-16">
+      {/* The intake form is a single column of fields and reads best narrow. The registry
+          is a list beside a detail pane and was being strangled by the same width. */}
+      <main className={`w-full ${view === "models" ? "max-w-6xl" : "max-w-xl"}`}>
         <div className="mb-6 flex gap-2 font-mono text-xs uppercase tracking-[0.2em]">
           <button
             type="button"
@@ -75,7 +77,21 @@ export default function Home() {
           </button>
         </div>
 
-        {view === "models" && <ModelsBrowser userId={userId} />}
+        {view === "models" && (
+          <>
+            <header className="mb-6 border-b-2 border-ink pb-4">
+              <p className="text-xs uppercase tracking-[0.3em] text-brass">Verity — registry</p>
+              <h1 className="mt-1 font-mono text-2xl font-bold tracking-tight sm:text-3xl">
+                Every version, and the evidence behind it.
+              </h1>
+              <p className="mt-2 max-w-xl text-sm text-ink-soft">
+                Each version keeps the eval run that justified it, how it was served, and
+                what its live traffic has looked like since.
+              </p>
+            </header>
+            <ModelsBrowser userId={userId} />
+          </>
+        )}
 
         {view === "upload" && (
           <>
