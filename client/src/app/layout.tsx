@@ -24,7 +24,8 @@ export const metadata: Metadata = {
 function Masthead() {
   return (
     <header className="border-b-2 border-ink bg-paper-raised">
-      <div className="mx-auto flex w-full max-w-3xl flex-wrap items-baseline gap-x-4 gap-y-1 px-4 py-3">
+      {/* max-w-6xl matches the registry, the widest view beneath it. */}
+      <div className="mx-auto flex w-full max-w-6xl flex-wrap items-baseline gap-x-4 gap-y-1 px-4 py-3">
         <span className="font-mono text-2xl font-extrabold uppercase leading-none tracking-[0.28em] sm:text-3xl">
           Verity
         </span>
