@@ -11,3 +11,10 @@ DEFAULT_BASE_URL = "https://api.groq.com/openai/v1"
 # Both agents need reliable JSON-mode output, which this handles well. If it disappears
 # too, `GET /openai/v1/models` lists what the key can actually reach.
 DEFAULT_MODEL = "openai/gpt-oss-120b"
+
+# The openai SDK's own default is 10 minutes with internal retries on top. Every agent
+# call happens synchronously inside an async route with no thread-pool offload, so a
+# slow provider response blocks the entire single-threaded server, not just this
+# request. A tight, explicit timeout turns "server wedged for minutes" into a fast,
+# visible error instead.
+DEFAULT_LLM_TIMEOUT_S = 30.0

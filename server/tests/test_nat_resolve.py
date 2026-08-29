@@ -142,16 +142,20 @@ def test_the_llm_client_reads_the_shared_verity_credentials(monkeypatch):
     captured = {}
 
     class FakeOpenAI:
-        def __init__(self, api_key, base_url):
+        def __init__(self, api_key, base_url, timeout):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["timeout"] = timeout
 
     monkeypatch.setattr(resolve_module, "_openai_class", lambda: FakeOpenAI)
 
     resolve_module._real_client()
 
+    from agents.provider import DEFAULT_LLM_TIMEOUT_S
+
     assert captured["api_key"] == "shared-key"
     assert captured["base_url"] == "https://api.groq.com/openai/v1"
+    assert captured["timeout"] == DEFAULT_LLM_TIMEOUT_S
 
 
 def test_resolve_defaults_to_the_configured_groq_model(monkeypatch):

@@ -232,6 +232,7 @@ def _deploy(
             payload=payload,
             io_schema=manifest["io_schema"],
             environment=manifest.get("environment") or {},
+            framework=manifest.get("framework"),
             metadata_store=metadata_store,
             archived_model_version_id=archived_model_version_id,
         )

@@ -4,7 +4,7 @@ import os
 from pydantic import BaseModel, field_validator, model_validator
 
 from agents.brain2.nat.score import RESOURCE_PREFIX
-from agents.provider import DEFAULT_BASE_URL, DEFAULT_MODEL
+from agents.provider import DEFAULT_BASE_URL, DEFAULT_LLM_TIMEOUT_S, DEFAULT_MODEL
 
 # The task -> metric lookup tables from Metrics.md, verbatim. Nat does not invent the
 # mapping per run; it reads it off the Atlas, which is the agent's decision table.
@@ -119,4 +119,5 @@ def _real_client():
     return _openai_class()(
         api_key=os.environ["VERITY_LLM_API_KEY"],
         base_url=os.environ.get("VERITY_LLM_BASE_URL", DEFAULT_BASE_URL),
+        timeout=DEFAULT_LLM_TIMEOUT_S,
     )

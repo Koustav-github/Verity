@@ -20,6 +20,7 @@ def _render(tmp_path, **overrides):
         payload=overrides.get("payload", b"model-bytes"),
         io_schema=overrides.get("io_schema", IO_SCHEMA),
         environment=overrides.get("environment", ENVIRONMENT),
+        framework=overrides.get("framework"),
     )
     return tmp_path
 
@@ -86,6 +87,43 @@ def test_the_dockerfile_runs_as_a_non_root_user(tmp_path):
     _render(tmp_path)
 
     assert "USER appuser" in (tmp_path / "Dockerfile").read_text()
+
+
+def test_requirements_exclude_framework_only_packages_the_model_does_not_use(tmp_path):
+    # xgboost's Linux wheel pulls in nvidia-nccl-cu12 (a ~340MB CUDA library) as a
+    # transitive dependency even for CPU-only use. A user who has ever installed
+    # xgboost or lightgbm alongside sklearn must not have either dragged into a
+    # sklearn model's image -- that turned a real build slow and failure-prone.
+    environment = {
+        "python_version": "3.12",
+        "packages": {
+            "scikit-learn": "1.7.2",
+            "numpy": "2.3.5",
+            "cloudpickle": "3.1.2",
+            "xgboost": "3.1.3",
+            "lightgbm": "4.6.0",
+        },
+    }
+    _render(tmp_path, environment=environment, framework="sklearn")
+
+    text = (tmp_path / "requirements.txt").read_text()
+
+    assert "scikit-learn==1.7.2" in text
+    assert "xgboost" not in text
+    assert "lightgbm" not in text
+
+
+def test_requirements_include_the_frameworks_own_package_when_it_is_used(tmp_path):
+    environment = {
+        "python_version": "3.12",
+        "packages": {"xgboost": "3.1.3", "lightgbm": "4.6.0", "numpy": "2.3.5"},
+    }
+    _render(tmp_path, environment=environment, framework="xgboost")
+
+    text = (tmp_path / "requirements.txt").read_text()
+
+    assert "xgboost==3.1.3" in text
+    assert "lightgbm" not in text
 
 
 def test_the_dockerfile_installs_libgomp_before_the_pip_layer(tmp_path):

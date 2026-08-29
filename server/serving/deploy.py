@@ -21,6 +21,7 @@ def deploy(
     io_schema,
     environment,
     metadata_store,
+    framework=None,
     archived_model_version_id=None,
     runtime=None,
     render_fn=None,
@@ -45,6 +46,7 @@ def deploy(
                 payload=payload,
                 io_schema=io_schema,
                 environment=environment,
+                framework=framework,
             )
             runtime.build(context_dir=context_dir, tag=tag)
 

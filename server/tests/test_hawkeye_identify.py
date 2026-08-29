@@ -122,17 +122,21 @@ def test_the_llm_client_reads_the_shared_verity_credentials(monkeypatch):
     captured = {}
 
     class FakeOpenAI:
-        def __init__(self, api_key, base_url):
+        def __init__(self, api_key, base_url, timeout):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["timeout"] = timeout
 
     monkeypatch.setattr(identify_module, "_openai_class", lambda: FakeOpenAI)
 
     identify_module._real_client()
 
+    from agents.provider import DEFAULT_LLM_TIMEOUT_S
+
     assert captured == {
         "api_key": "shared-key",
         "base_url": "https://example.test/v1/",
+        "timeout": DEFAULT_LLM_TIMEOUT_S,
     }
 
 
@@ -158,7 +162,7 @@ def test_the_llm_client_falls_back_to_groq_when_no_base_url_is_set(monkeypatch):
     captured = {}
 
     class FakeOpenAI:
-        def __init__(self, api_key, base_url):
+        def __init__(self, api_key, base_url, timeout):
             captured["base_url"] = base_url
 
     monkeypatch.setattr(identify_module, "_openai_class", lambda: FakeOpenAI)

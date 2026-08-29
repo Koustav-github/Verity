@@ -100,6 +100,24 @@ def test_the_build_context_receives_the_artifact_and_its_environment():
     assert captured["io_schema"] == IO_SCHEMA
 
 
+def test_the_build_context_receives_the_models_framework():
+    captured = {}
+    deploy(
+        model_version_id="mv_1",
+        payload=b"bytes",
+        io_schema=IO_SCHEMA,
+        environment=ENVIRONMENT,
+        framework="xgboost",
+        metadata_store=FakeStore(),
+        runtime=FakeRuntime(),
+        render_fn=lambda **kwargs: captured.update(kwargs),
+        wait_healthy_fn=lambda **kwargs: True,
+        tempdir_fn=_fake_tempdir,
+    )
+
+    assert captured["framework"] == "xgboost"
+
+
 def test_a_build_failure_records_a_failed_row_carrying_the_reason():
     store = FakeStore()
     runtime = FakeRuntime(build_error=RuntimeError("no space left on device"))

@@ -23,5 +23,9 @@ dist/
 # Editor / tooling
 .vscode/
 
+# Local dev-server logs (uvicorn / next dev redirected to a file when run detached)
+*.uvicorn.log
+*.nextdev.log
+
 # Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
 .superpowers/

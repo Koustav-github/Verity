@@ -644,6 +644,27 @@ def test_deploy_fires_when_a_version_reaches_production():
     assert calls[0]["io_schema"]["n_features"] == 2
 
 
+def test_deploy_receives_the_manifests_framework_so_it_can_scope_requirements():
+    # deploy() uses this to decide whether xgboost/lightgbm belong in this model's
+    # image at all -- see server/serving/build.py's _FRAMEWORK_ONLY_PACKAGES.
+    calls = []
+
+    def register_with_archive(**kwargs):
+        return {"model_id": "mdl_123", "status": "production",
+                "archived_model_version_id": "mv_old"}
+
+    _build(
+        register_fn=register_with_archive,
+        evaluate_fn=passing_eval,
+        fixture_payload=cloudpickle.dumps({"X": [[0.0]], "y": [0]}),
+        fixture_descriptor={"kind": "labeled_holdout", "sha256": "f" * 64},
+        configure_fn=lambda **kw: {"id": "mcfg_1"},
+        deploy_fn=lambda **kw: calls.append(kw) or {"id": "dep_1", "status": "live"},
+    )
+
+    assert calls[0]["framework"] == "sklearn"
+
+
 def test_deploy_does_not_fire_for_a_version_that_was_not_promoted():
     calls = []
 

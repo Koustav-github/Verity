@@ -3,7 +3,7 @@ import os
 
 from pydantic import BaseModel
 
-from agents.provider import DEFAULT_BASE_URL, DEFAULT_MODEL
+from agents.provider import DEFAULT_BASE_URL, DEFAULT_LLM_TIMEOUT_S, DEFAULT_MODEL
 
 
 class Manifest(BaseModel):
@@ -54,4 +54,5 @@ def _real_client():
     return _openai_class()(
         api_key=os.environ["VERITY_LLM_API_KEY"],
         base_url=os.environ.get("VERITY_LLM_BASE_URL", DEFAULT_BASE_URL),
+        timeout=DEFAULT_LLM_TIMEOUT_S,
     )
